@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:java="http://www.mulesoft.org/schema/mule/java" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/java http://www.mulesoft.org/schema/mule/java/current/mule-java.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+	<http:request-config name="HTTP_Request_configuration" doc:name="HTTP Request configuration" doc:id="703e73b7-62fc-4af1-9461-af479366df79">
+		<http:request-connection host="62.28.153.218" port="2630" connectionIdleTimeout="10000"/>
+	</http:request-config>
+
+	<sub-flow name="garrafeira-testes-login-and-generate-digest" doc:id="b47fe80a-48a5-4911-82a5-97a373785896">
+		<ee:transform doc:name="Set Variable user e pass" doc:id="608ba04b-a7d6-4ed5-a94c-9f8eff6fff8" >
+			<ee:message>
+			</ee:message>
+			<ee:variables>
+				<ee:set-variable variableName="user"><![CDATA["MuleSoftTEST"]]></ee:set-variable>
+				<ee:set-variable variableName="pass"><![CDATA["URymxz4&quuoHDU6"]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<http:request method="GET" doc:name="to request login" doc:id="703e73b7-62fc-4af1-9461-af479366df79" config-ref="HTTP_Request_configuration" path="/login" target="challenge" targetValue="#[attributes.headers.digest]">
+			<http:headers><![CDATA[#[output application/java
+---
+{
+	name : vars.user
+}]]]></http:headers>
+		</http:request>
+		<logger level="INFO" doc:name="Logger" doc:id="4c21844c-88e5-4d23-9bfd-b5fb8dd950c5" message="Iniciando digest..." />
+		<java:invoke-static method="computeDigest(java.lang.String,java.lang.String,java.lang.String)" doc:name="Invoke static" doc:id="5ef2e52c-2f44-4d74-b525-81ceecc78cde" class="utility.ArtSoft" target="digest">
+			<java:args><![CDATA[
+            #[{
+                arg0: vars.user,
+                arg1: vars.pass,
+                arg2: vars.challenge
+            }]
+        ]]></java:args>
+		</java:invoke-static>
+	</sub-flow>
+
+	<flow name="estrutura-tabelas" doc:id="1854b301-10a5-4baa-9d92-626d4441fb47">
+		<scheduler doc:name="Scheduler" doc:id="29c3c3a7-f287-4433-b6a5-2ea5adb46661">
+			<scheduling-strategy>
+				<fixed-frequency timeUnit="DAYS" />
+			</scheduling-strategy>
+		</scheduler>
+		<flow-ref doc:name="Login and Digest" doc:id="ef3cd8f7-db9e-4318-87df-09fd27dd401b" name="garrafeira-testes-login-and-generate-digest" />
+		<http:request method="POST" doc:name="/ArtDB/_tblDesc" doc:id="97a7ef61-07d7-456a-ac38-453a759e2884" config-ref="HTTP_Request_configuration" path="/ArtDB/_tblDesc" outputMimeType="application/octet-stream">
+			<repeatable-in-memory-stream />
+			<http:body><![CDATA[<tblDesc table="VndFch"/>]]></http:body>
+			<http:headers><![CDATA[#[{
+	digest: vars.digest
+}]]]></http:headers>
+		</http:request>
+		<ee:transform doc:name="Transform Message" doc:id="24d96ac7-42a8-4ede-a2cc-a7c632f17689">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/xml
+---
+read(payload as String {encoding: "windows-1252"}, "application/xml")]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<logger level="INFO" doc:name="Logger Breakpoint" doc:id="661820a7-f195-4fea-931a-d8ce0459e600" message="Logger" />
+	</flow>
+
+	<flow name="informacoes-tabelas" doc:id="ff1e0359-9727-4bd0-9477-1b2c3df14b60">
+		<scheduler doc:name="Scheduler" doc:id="efec8ab2-f093-4515-b759-0800c1e47c93">
+			<scheduling-strategy>
+				<fixed-frequency timeUnit="DAYS" />
+			</scheduling-strategy>
+		</scheduler>
+		<flow-ref doc:name="Login and Digest" doc:id="6a2a17c1-d7c9-4a55-9eb7-b790a73b595f" name="garrafeira-testes-login-and-generate-digest" />
+		<ee:transform doc:name="Body" doc:id="629f5d6c-8da1-4be8-91d6-281932bb2dbe">
+			<ee:message>
+			</ee:message>
+			<ee:variables>
+				<ee:set-variable resource="consultas/TerFch.dwl" variableName="TerFch" />
+				<ee:set-variable resource="consultas/TerCon.dwl" variableName="TerCon" />
+				<ee:set-variable resource="consultas/StkFch.dwl" variableName="StkFch" />
+				<ee:set-variable variableName="tabPaises"><![CDATA[%dw 2.0
+output text/xml writeDeclaration = false
+---
+{
+    ELEM: {
+        Paises @('type': "text", form: "\$TabPaises()"): null
+    }
+}]]></ee:set-variable>
+				<ee:set-variable resource="consultas/StkFch_All_Fields.dwl" variableName="StkFch_All_Fields" />
+				<ee:set-variable resource="consultas/StkFch_Precos.dwl" variableName="StkFch_Precos" />
+				<ee:set-variable resource="consultas/CtaLan_Query_Pronta.dwl" variableName="CtaLan_Query_Pronta" />
+				<ee:set-variable resource="consultas/CtaLan_Query_All_Fields.dwl" variableName="CtaLan_Query_All_Fields" />
+				<ee:set-variable resource="consultas/StkRft_Negociated_Prices.dwl" variableName="StkRft_Negociated_Prices" />
+				<ee:set-variable resource="consultas/DocFch.dwl" variableName="DocFch" />
+				<ee:set-variable resource="consultas/DocFch_All_Fields.dwl" variableName="DocFch_All_Fields" />
+				<ee:set-variable resource="consultas/StkFch_Inventory.dwl" variableName="StkFch_Inventory" />
+				<ee:set-variable resource="consultas/VndFch.dwl" variableName="VndFch" />
+			</ee:variables>
+		</ee:transform>
+		<http:request method="POST" doc:name="/Queries/Query" doc:id="42597292-a988-4115-a606-3aafb60c5638" config-ref="HTTP_Request_configuration" path="/Queries/Query" outputMimeType="application/octet-stream" requestStreamingMode="NEVER">
+			<repeatable-in-memory-stream />
+			<http:body><![CDATA[#[vars.VndFch]]]></http:body>
+			<http:headers><![CDATA[#[{
+	digest: vars.digest
+}]]]></http:headers>
+		</http:request>
+		<ee:transform doc:name="Transform Message" doc:id="4a7d34bb-f99b-4361-a315-f125bd39ee6e">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/xml
+---
+read(payload as String {encoding: "windows-1252"}, "application/xml") ]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<logger level="INFO" doc:name="Logger Breakpoint" doc:id="a7a95e12-8387-45bd-bdaf-1bbf35508e9a" message="Logger" />
+	</flow>
+
+	<flow name="request-geral" doc:id="940ae9a1-9b59-401e-a9f4-a5e64e634407">
+		<scheduler doc:name="Scheduler" doc:id="3e353cbe-e1e6-4d28-a338-e4e5b5d1bb9e">
+			<scheduling-strategy>
+				<fixed-frequency timeUnit="DAYS" />
+			</scheduling-strategy>
+		</scheduler>
+		<flow-ref doc:name="Login and Digest" doc:id="47470358-8777-4374-8bf2-9d287c24ab9a" name="garrafeira-testes-login-and-generate-digest" />
+		<http:request method="POST" doc:name="/ArtDB/CfgTables" doc:id="c99aa80d-34d3-4e08-be88-31063f6326a0" config-ref="HTTP_Request_configuration" path='/ArtDB/CfgTables' outputMimeType="application/octet-stream">
+			<repeatable-in-memory-stream />
+			<http:body><![CDATA[<root table='TblFreguesias' idTable='11' subId='1'/>]]></http:body>
+			<http:headers><![CDATA[#[{
+	digest: vars.digest
+}]]]></http:headers>
+		</http:request>
+		<ee:transform doc:name="Transform Message" doc:id="83e60f4b-64de-4242-9571-35fc006eb6f8">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/xml
+---
+read(payload as String {encoding: "windows-1252"}, "application/xml")]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<logger level="INFO" doc:name="Logger Breakpoint" doc:id="c84988c3-72c8-4448-9411-59f22d628bba" message="Logger" />
+	</flow>
+
+</mule>
