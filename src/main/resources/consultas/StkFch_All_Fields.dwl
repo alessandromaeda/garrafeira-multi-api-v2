@@ -5,7 +5,8 @@ output text/xml writeDeclaration = false
     "type": "list",
     "name": "SKU",
     "end": "30",
-    "query": "StkFch|DtUltAct|Data=20250411:20991231 |? \$IsGreat(%StkFch.Cod.Codigo,01000) ^ \$IsLessEq(%StkFch.Cod.Codigo,AA999999)"
+    // "query": "StkFch|DtUltAct|Data=20250411:20991231 |? \$IsGreat(%StkFch.Cod.Codigo,01000) ^ \$IsLessEq(%StkFch.Cod.Codigo,AA999999)"
+    "query": "StkFch|Principal|Codigo=18:18 |? \$IsEqual(%StkFch.Cod.Codigo,18)"
 ): {
     "defcol": {
         "StkFch.Cod.Ant" @(form: "%StkFch.Cod.Ant"): {},

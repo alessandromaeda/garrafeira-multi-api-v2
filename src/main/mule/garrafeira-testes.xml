@@ -19,7 +19,7 @@ http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/
 				<ee:set-variable variableName="pass"><![CDATA["URymxz4&quuoHDU6"]]></ee:set-variable>
 			</ee:variables>
 		</ee:transform>
-		<http:request method="GET" doc:name="to request login" doc:id="703e73b7-62fc-4af1-9461-af479366df79" config-ref="HTTP_Request_configuration" path="/login" target="challenge" targetValue="#[attributes.headers.digest]">
+		<http:request method="GET" doc:name="to request login" doc:id="703e73b7-62fc-4af1-9461-af479366df79" config-ref="HTTP_Request_configuration" path="/login" target="challenge" targetValue="#[attributes.headers['digest'] default attributes.headers['Digest'] default attributes.headers.digest]">
 			<http:headers><![CDATA[#[output application/java
 ---
 {
@@ -47,7 +47,7 @@ http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/
 		<flow-ref doc:name="Login and Digest" doc:id="ef3cd8f7-db9e-4318-87df-09fd27dd401b" name="garrafeira-testes-login-and-generate-digest" />
 		<http:request method="POST" doc:name="/ArtDB/_tblDesc" doc:id="97a7ef61-07d7-456a-ac38-453a759e2884" config-ref="HTTP_Request_configuration" path="/ArtDB/_tblDesc" outputMimeType="application/octet-stream">
 			<repeatable-in-memory-stream />
-			<http:body><![CDATA[<tblDesc table="VndFch"/>]]></http:body>
+			<http:body><![CDATA[<tblDesc table="StkUnl"/>]]></http:body>
 			<http:headers><![CDATA[#[{
 	digest: vars.digest
 }]]]></http:headers>
@@ -63,14 +63,65 @@ read(payload as String {encoding: "windows-1252"}, "application/xml")]]></ee:set
 		<logger level="INFO" doc:name="Logger Breakpoint" doc:id="661820a7-f195-4fea-931a-d8ce0459e600" message="Logger" />
 	</flow>
 
+	<flow name="informacoes-tabelas-geral" doc:id="a0813018-972d-4910-9d0a-ded4d3be2e02" >
+		<scheduler doc:name="Scheduler" doc:id="b59a3d2e-0b30-44d7-9905-d5d961826377" >
+			<scheduling-strategy >
+				<fixed-frequency timeUnit="DAYS"/>
+			</scheduling-strategy>
+		</scheduler>
+		<flow-ref doc:name="Login and Digest" doc:id="5f5ba846-2760-4a56-a8ce-256dd636647b" name="garrafeira-testes-login-and-generate-digest" />
+		<ee:transform doc:name="Body" doc:id="7e3cd006-99e0-4a58-a24d-cd0d8f48f775">
+			<ee:message />
+			<ee:variables>
+				<ee:set-variable resource="consultas/TerFch.dwl" variableName="TerFch" />
+				<ee:set-variable resource="consultas/TerCon.dwl" variableName="TerCon" />
+				<ee:set-variable resource="consultas/StkFch.dwl" variableName="StkFch" />
+				<ee:set-variable variableName="tabPaises"><![CDATA[%dw 2.0
+output text/xml writeDeclaration = false
+---
+{
+    ELEM: {
+        Paises @('type': "text", form: "\$TabPaises()"): null
+    }
+}]]></ee:set-variable>
+				<ee:set-variable resource="consultas/StkFch_All_Fields.dwl" variableName="StkFch_All_Fields" />
+				<ee:set-variable resource="consultas/StkFch_Precos.dwl" variableName="StkFch_Precos" />
+				<ee:set-variable resource="consultas/CtaLan_Query_Pronta.dwl" variableName="CtaLan_Query_Pronta" />
+				<ee:set-variable resource="consultas/CtaLan_Query_All_Fields.dwl" variableName="CtaLan_Query_All_Fields" />
+				<ee:set-variable resource="consultas/StkRft_Negociated_Prices.dwl" variableName="StkRft_Negociated_Prices" />
+				<ee:set-variable resource="consultas/DocFch.dwl" variableName="DocFch" />
+				<ee:set-variable resource="consultas/DocFch_All_Fields.dwl" variableName="DocFch_All_Fields" />
+				<ee:set-variable resource="consultas/StkFch_Inventory.dwl" variableName="StkFch_Inventory" />
+				<ee:set-variable resource="consultas/VndFch.dwl" variableName="VndFch" />
+				<ee:set-variable resource="consultas/Queries_Query_Products.dwl" variableName="Queries_Query_Products" />
+				<ee:set-variable resource="consultas/logistic.dwl" variableName="logistic" />
+			</ee:variables>
+		</ee:transform>
+		<http:request method="POST" doc:name="/Queries/Query" doc:id="d326deac-8a1c-40cf-ad52-46633d289d43" config-ref="HTTP_Request_configuration" path="/Queries/Query" outputMimeType="application/octet-stream" requestStreamingMode="NEVER">
+			<repeatable-in-memory-stream />
+			<http:body><![CDATA[#[vars.Queries_Query_Products
+//vars.logistic]]]></http:body>
+			<http:headers><![CDATA[#[{
+	digest: vars.digest
+}]]]></http:headers>
+		</http:request>
+		<ee:transform doc:name="Transform Message" doc:id="1109be63-c703-45da-aab0-a7bfda8e86a7" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/xml
+---
+read(payload as String {encoding: "windows-1252"}, "application/xml") ]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<logger level="INFO" doc:name="Logger Breakpoint" doc:id="c0c966a0-6730-41ce-b0ff-fc67aa530f8e" message="Logger " />
+	</flow>
 	<flow name="informacoes-tabelas" doc:id="ff1e0359-9727-4bd0-9477-1b2c3df14b60">
 		<scheduler doc:name="Scheduler" doc:id="efec8ab2-f093-4515-b759-0800c1e47c93">
 			<scheduling-strategy>
 				<fixed-frequency timeUnit="DAYS" />
 			</scheduling-strategy>
 		</scheduler>
-		<flow-ref doc:name="Login and Digest" doc:id="6a2a17c1-d7c9-4a55-9eb7-b790a73b595f" name="garrafeira-testes-login-and-generate-digest" />
-		<ee:transform doc:name="Body" doc:id="629f5d6c-8da1-4be8-91d6-281932bb2dbe">
+		<ee:transform doc:name="Body &amp; Init Pagination" doc:id="629f5d6c-8da1-4be8-91d6-281932bb2dbe">
 			<ee:message>
 			</ee:message>
 			<ee:variables>
@@ -94,13 +145,50 @@ output text/xml writeDeclaration = false
 				<ee:set-variable resource="consultas/DocFch_All_Fields.dwl" variableName="DocFch_All_Fields" />
 				<ee:set-variable resource="consultas/StkFch_Inventory.dwl" variableName="StkFch_Inventory" />
 				<ee:set-variable resource="consultas/VndFch.dwl" variableName="VndFch" />
+				<ee:set-variable resource="consultas/StkFch_All_Fields.dwl" variableName="baseQuery" />
+				<ee:set-variable variableName="accumulatedResults"><![CDATA[%dw 2.0 output application/java --- []]]></ee:set-variable>
+				<ee:set-variable variableName="nextRecord"><![CDATA[null]]></ee:set-variable>
+				<ee:set-variable variableName="usedCursors"><![CDATA[%dw 2.0 output application/java --- []]]></ee:set-variable>
+				<ee:set-variable variableName="pagesFetched"><![CDATA[0]]></ee:set-variable>
+				<ee:set-variable variableName="maxAdditionalPages"><![CDATA[3]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<flow-ref doc:name="Paginate Query" doc:id="a819b183-b712-421e-8419-75618b76c810" name="informacoes-tabelas-fetch-page-subflow" />
+		<set-payload value="#[vars.accumulatedResults default []]" doc:name="Return All Pages" />
+		<logger level="INFO" doc:name="Logger Breakpoint" doc:id="a7a95e12-8387-45bd-bdaf-1bbf35508e9a" message="#['Processamento de informacoes-tabelas concluido. Total paginas: ' ++ (vars.pagesFetched default 0)]" />
+	</flow>
+
+	<sub-flow name="informacoes-tabelas-fetch-page-subflow" doc:id="d938b812-70b9-4a41-b841-39659b83b123">
+		<flow-ref doc:name="Refresh Login and Digest" name="garrafeira-testes-login-and-generate-digest" />
+		<ee:transform doc:name="Prepare Query XML with start" doc:id="a5381f21-7299-4c2f-b482-123456789abc">
+			<ee:variables>
+				<ee:set-variable variableName="currentQueryXml"><![CDATA[%dw 2.0
+output text/plain
+var rawQuery = vars.baseQuery default vars.StkFch_All_Fields
+var queryStr = if (rawQuery is String) rawQuery else write(rawQuery, "application/xml", {writeDeclaration: false})
+var queryMatches = queryStr scan /query="([^"]*)"/
+var queryAttribute = queryMatches[0][0] default null
+var queryValue = queryMatches[0][1] default null
+var paginatedQueryValue =
+	if (isEmpty(queryValue) or isEmpty(vars.nextRecord))
+		queryValue
+	else if (queryValue contains "|#")
+		queryValue replace /\|#[^\s]*/ with ("|#" ++ (vars.nextRecord as String))
+	else
+		queryValue ++ " |#" ++ (vars.nextRecord as String)
+---
+if (!isEmpty(vars.nextRecord) and !isEmpty(queryAttribute))
+	queryStr replace queryAttribute with ('query="' ++ paginatedQueryValue ++ '"')
+else
+	queryStr]]></ee:set-variable>
 			</ee:variables>
 		</ee:transform>
 		<http:request method="POST" doc:name="/Queries/Query" doc:id="42597292-a988-4115-a606-3aafb60c5638" config-ref="HTTP_Request_configuration" path="/Queries/Query" outputMimeType="application/octet-stream" requestStreamingMode="NEVER">
 			<repeatable-in-memory-stream />
-			<http:body><![CDATA[#[vars.VndFch]]]></http:body>
+			<http:body><![CDATA[#[vars.currentQueryXml]]]></http:body>
 			<http:headers><![CDATA[#[{
-	digest: vars.digest
+	digest: vars.digest,
+	'Content-Type': 'application/xml'
 }]]]></http:headers>
 		</http:request>
 		<ee:transform doc:name="Transform Message" doc:id="4a7d34bb-f99b-4361-a315-f125bd39ee6e">
@@ -108,11 +196,58 @@ output text/xml writeDeclaration = false
 				<ee:set-payload><![CDATA[%dw 2.0
 output application/xml
 ---
-read(payload as String {encoding: "windows-1252"}, "application/xml") ]]></ee:set-payload>
+read(payload as String {encoding: "windows-1252"}, "application/xml")]]></ee:set-payload>
 			</ee:message>
 		</ee:transform>
-		<logger level="INFO" doc:name="Logger Breakpoint" doc:id="a7a95e12-8387-45bd-bdaf-1bbf35508e9a" message="Logger" />
-	</flow>
+		<ee:transform doc:name="Accumulate &amp; Extract Next" doc:id="829f2719-7489-4911-a831-29182a981273">
+			<ee:variables>
+				<ee:set-variable variableName="accumulatedResults"><![CDATA[%dw 2.0
+output application/java
+---
+(vars.accumulatedResults default []) + [payload]]]></ee:set-variable>
+				<ee:set-variable variableName="usedCursors"><![CDATA[%dw 2.0
+output application/java
+---
+if (isEmpty(vars.nextRecord))
+	vars.usedCursors default []
+else
+	(vars.usedCursors default []) + [(vars.nextRecord as String)]]]></ee:set-variable>
+				<ee:set-variable variableName="nextRecord"><![CDATA[%dw 2.0
+output application/java
+---
+do {
+	var responseXml = write(payload, "application/xml", {writeDeclaration: false})
+	var nextMatches = responseXml scan /<TBL\b[^>]*\bnext\s*=\s*["']([^"']+)["']/
+	var serverNext = nextMatches[0][1] default null
+	---
+	if (isEmpty(serverNext))
+		null
+	else
+		serverNext as String
+}]]></ee:set-variable>
+				<ee:set-variable variableName="serverNext"><![CDATA[%dw 2.0
+output application/java
+var responseXml = write(payload, "application/xml", {writeDeclaration: false})
+var nextMatches = responseXml scan /<TBL\b[^>]*\bnext\s*=\s*["']([^"']+)["']/
+---
+nextMatches[0][1] default null]]></ee:set-variable>
+				<ee:set-variable variableName="pagesFetched"><![CDATA[%dw 2.0
+output application/java
+---
+(vars.pagesFetched default 0) + 1]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<logger level="INFO" doc:name="Log Pagination State" message="#['Pagina ' ++ (vars.pagesFetched default 0) ++ ' recebida. next do servidor=' ++ (vars.serverNext default 'nao informado') ++ ', cursor |# seguinte=' ++ (vars.nextRecord default 'nao aplicavel')]" />
+		<choice doc:name="Has Next Page?">
+			<when expression="#[!isEmpty(vars.nextRecord) and !((vars.usedCursors default []) contains (vars.nextRecord as String)) and ((vars.pagesFetched default 0) &lt;= (vars.maxAdditionalPages default 0))]">
+				<logger level="INFO" doc:name="Log Next Page" message="#['A obter pagina ' ++ ((vars.pagesFetched default 0) + 1) ++ ' com cursor |#' ++ (vars.nextRecord default '')]" />
+				<flow-ref doc:name="Fetch Next Page" name="informacoes-tabelas-fetch-page-subflow" />
+			</when>
+			<otherwise>
+				<logger level="INFO" doc:name="Fim Paginacao" message="#[if (!isEmpty(vars.nextRecord) and ((vars.usedCursors default []) contains (vars.nextRecord as String))) 'Paginacao interrompida: cursor repetido ' ++ (vars.nextRecord as String) else 'Fim da paginacao.']" />
+			</otherwise>
+		</choice>
+	</sub-flow>
 
 	<flow name="request-geral" doc:id="940ae9a1-9b59-401e-a9f4-a5e64e634407">
 		<scheduler doc:name="Scheduler" doc:id="3e353cbe-e1e6-4d28-a338-e4e5b5d1bb9e">
