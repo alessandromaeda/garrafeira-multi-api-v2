@@ -95,11 +95,13 @@ output text/xml writeDeclaration = false
 				<ee:set-variable resource="consultas/VndFch.dwl" variableName="VndFch" />
 				<ee:set-variable resource="consultas/Queries_Query_Products.dwl" variableName="Queries_Query_Products" />
 				<ee:set-variable resource="consultas/logistic.dwl" variableName="logistic" />
+				<ee:set-variable resource="consultas/Queries_Query_PricingList.dwl" variableName="Queries_Query_PricingList" />
 			</ee:variables>
 		</ee:transform>
 		<http:request method="POST" doc:name="/Queries/Query" doc:id="d326deac-8a1c-40cf-ad52-46633d289d43" config-ref="HTTP_Request_configuration" path="/Queries/Query" outputMimeType="application/octet-stream" requestStreamingMode="NEVER">
 			<repeatable-in-memory-stream />
-			<http:body><![CDATA[#[vars.Queries_Query_Products
+			<http:body><![CDATA[#[//vars.Queries_Query_Products
+vars.Queries_Query_PricingList
 //vars.logistic]]]></http:body>
 			<http:headers><![CDATA[#[{
 	digest: vars.digest
@@ -272,6 +274,37 @@ read(payload as String {encoding: "windows-1252"}, "application/xml")]]></ee:set
 			</ee:message>
 		</ee:transform>
 		<logger level="INFO" doc:name="Logger Breakpoint" doc:id="c84988c3-72c8-4448-9411-59f22d628bba" message="Logger" />
+	</flow>
+	<flow name="estrutura-ArtDB-CfgTables" doc:id="28771b1d-c09c-4a81-97f3-11ec9c3858c2" >
+		<scheduler doc:name="Scheduler" doc:id="1ba5ebdf-979c-4b44-b70a-c824e47fadfe" >
+			<scheduling-strategy >
+				<fixed-frequency timeUnit="DAYS" />
+			</scheduling-strategy>
+		</scheduler>
+		<flow-ref doc:name="Login and Digest" doc:id="bea9e19d-de2d-45fd-8dd5-f719889b2b09" name="garrafeira-testes-login-and-generate-digest" />
+		<http:request method="POST" doc:name="/ArtDB/_tblDesc" doc:id="7b81e76c-d6e2-43b0-8555-743386e6bf11" config-ref="HTTP_Request_configuration" path="/ArtDB/CfgTables" outputMimeType="application/octet-stream" >
+			<repeatable-in-memory-stream />
+			<http:body ><![CDATA[#[%dw 2.0
+output application/xml writeDeclaration = false
+---
+{
+    "root" @(
+        "table": "TblNomePrecos"
+    ): {}
+}]]]></http:body>
+			<http:headers ><![CDATA[#[{
+	digest: vars.digest
+}]]]></http:headers>
+		</http:request>
+		<ee:transform doc:name="Transform Message" doc:id="496b7c59-2815-4065-9130-b9d1434bea4a" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/xml
+---
+read(payload as String {encoding: "windows-1252"}, "application/xml")]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<logger level="INFO" doc:name="Logger Breakpoint" doc:id="72a07d20-6d3c-43c4-8e25-ad06e701333a" message="Logger" />
 	</flow>
 
 </mule>

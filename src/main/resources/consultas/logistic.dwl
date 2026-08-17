@@ -2,15 +2,19 @@
 output application/xml writeDeclaration = false
 ---
 {
+    // Teste isolado pro NrReg=319 (ProductCode "15" / LICORES).
+    // Se vier <TBL/> vazio, confirma que esse registro nao tem
+    // logistica mesmo - reforcando a hipotese de que e um registro
+    // de familia/grupo, nao um produto vendavel de verdade.
     "TBL" @(
         "type": "list",
-        "name": "SKU",
-        "end": "10",
-        "query": "StkFch|Principal|Codigo=AA50005:AA50005"
+        "name": "UL",
+        "end": "20",
+        "query": "StkUnl|AI_Art=319"
     ): {
         defcol: {
-            ProductCode @(form: "%StkFch.Cod.Codigo"): {},
-            ProductName @(form: "%StkFch.Nome.0"): {}
+            CodUnl @("form": "%StkUnl.CodUnl"): {},
+            Codigo @("form": "%StkUnl.Codigo"): {}
         }
     }
 }
