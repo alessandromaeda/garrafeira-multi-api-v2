@@ -96,13 +96,15 @@ output text/xml writeDeclaration = false
 				<ee:set-variable resource="consultas/Queries_Query_Products.dwl" variableName="Queries_Query_Products" />
 				<ee:set-variable resource="consultas/logistic.dwl" variableName="logistic" />
 				<ee:set-variable resource="consultas/Queries_Query_PricingList.dwl" variableName="Queries_Query_PricingList" />
+				<ee:set-variable resource="consultas/Testesub.dwl" variableName="Testesub" />
 			</ee:variables>
 		</ee:transform>
 		<http:request method="POST" doc:name="/Queries/Query" doc:id="d326deac-8a1c-40cf-ad52-46633d289d43" config-ref="HTTP_Request_configuration" path="/Queries/Query" outputMimeType="application/octet-stream" requestStreamingMode="NEVER">
 			<repeatable-in-memory-stream />
 			<http:body><![CDATA[#[//vars.Queries_Query_Products
-vars.Queries_Query_PricingList
-//vars.logistic]]]></http:body>
+//vars.Queries_Query_PricingList
+//vars.logistic
+vars.Testesub]]]></http:body>
 			<http:headers><![CDATA[#[{
 	digest: vars.digest
 }]]]></http:headers>
@@ -115,7 +117,7 @@ output application/xml
 read(payload as String {encoding: "windows-1252"}, "application/xml") ]]></ee:set-payload>
 			</ee:message>
 		</ee:transform>
-		<logger level="INFO" doc:name="Logger Breakpoint" doc:id="c0c966a0-6730-41ce-b0ff-fc67aa530f8e" message="Logger " />
+		<logger level="DEBUG" doc:name="Logger Breakpoint" doc:id="c0c966a0-6730-41ce-b0ff-fc67aa530f8e" message="payload " />
 	</flow>
 	<flow name="informacoes-tabelas" doc:id="ff1e0359-9727-4bd0-9477-1b2c3df14b60">
 		<scheduler doc:name="Scheduler" doc:id="efec8ab2-f093-4515-b759-0800c1e47c93">

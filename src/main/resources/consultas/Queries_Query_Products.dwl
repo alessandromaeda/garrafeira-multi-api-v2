@@ -6,7 +6,7 @@ output application/xml writeDeclaration = false
         "type": "list",
         "name": "SKU",
         "end": "100",
-        "query": "StkFch|DtUltAct|Data=20250411:20991231 |? \u0024IsGreat(%StkFch.Cod.Codigo,01000) ^ \u0024IsLessEq(%StkFch.Cod.Codigo,AA999999) ^ \u0024IsEqual(%StkFch.Div.NivFam,0)"
+        "query": "StkFch|DtUltAct|Data=20250411:20991231|? \$IsGreat(%StkFch.Cod.Codigo,01000) ^ \$IsLessEq(%StkFch.Cod.Codigo,AA999999) ^ \$IsEqual(%StkFch.Div.NivFam,0)"
     ): {
         "defcol": {
             "ProductCode" @(
@@ -37,7 +37,7 @@ output application/xml writeDeclaration = false
                 "form": "%StkFch.IVA.Taxa"
             ): {},
             "ProductAllStock" @(
-                "form": "\u0024SkuValue(%StkFch.Cod.Codigo,Avail,0)"
+                "form": "\$SkuValue(%StkFch.Cod.Codigo,Avail,0)"
             ): {},
             "ProductSupplierNumber" @(
                 "form": "%StkFch.Logis.FornPr"
@@ -46,20 +46,20 @@ output application/xml writeDeclaration = false
                 "form": "%StkFch.Logis.QtdEmb"
             ): {},
             "ProductImage" @(
-                "form": "\u0024GetImage(%StkFch.Div.FichImgRed)"
+                "form": "\$GetImage(%StkFch.Div.FichImgRed)"
             ): {},
             "DoNotOrder" @(
-                "form": "\u0024LogicAnd(%StkFch.Flag.App,30,H)"
+                "form": "\$LogicAnd(%StkFch.Flag.App,30,H)"
             ): {},
             "DoNotSale" @(
-                "form": "\u0024LogicAnd(%StkFch.Flag.App,3,H)"
+                "form": "\$LogicAnd(%StkFch.Flag.App,3,H)"
             ): {},
             "Logistics" @(
                 "type": "list",
                 "name": "UL",
-                "end": "20",
-                //"supressEmpty": "s",
-               // "supressroot": "s",
+                "end": "1",
+                "supressEmpty": "s",
+                "supressRoot": "s",
                 "query": "StkUnl|AI_Art={%StkFch.Div.NrReg}"
             ): {
                 "defcol": {
