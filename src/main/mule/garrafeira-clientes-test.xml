@@ -1,0 +1,222 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+	<!-- Listener apenas para testes locais/controlados. Não possui scheduler. -->
+	<http:listener-config name="Clientes_Test_HTTP_Listener_config" doc:name="Clientes Test REST Listener">
+		<http:listener-connection host="127.0.0.1" port="8082" />
+	</http:listener-config>
+
+	<!--
+		GET /test/clientes             -> lista até 100 terceiros/clientes
+		GET /test/clientes?nif=...     -> procura exata pelo NIF
+	-->
+	<flow name="garrafeira-clientes-test-query-flow">
+		<http:listener config-ref="Clientes_Test_HTTP_Listener_config" path="/test/clientes" allowedMethods="GET" doc:name="GET clientes de teste">
+			<http:response statusCode="#[vars.httpStatus default 200]">
+				<http:headers><![CDATA[#[{'Content-Type': 'application/xml; charset=UTF-8'}]]]></http:headers>
+			</http:response>
+		</http:listener>
+		<set-variable variableName="requestedNif" value="#[attributes.queryParams.nif default '']" doc:name="Ler NIF opcional" />
+		<choice doc:name="Validar NIF">
+			<when expression="#[!isEmpty(vars.requestedNif) and !((vars.requestedNif as String) matches /^\d{9}$/)]">
+				<raise-error type="CLIENTES:INVALID_NIF" description="O NIF deve conter exatamente 9 algarismos." />
+			</when>
+		</choice>
+		<ee:transform doc:name="Criar consulta de clientes">
+			<ee:variables>
+				<ee:set-variable resource="clientes/Queries_Query_Clients.dwl" variableName="clientsQueryXml" />
+			</ee:variables>
+		</ee:transform>
+		<flow-ref name="garrafeira-testes-login-and-generate-digest" doc:name="Login e digest" />
+		<http:request method="POST" config-ref="HTTP_Request_configuration" path="/Queries/Query" outputMimeType="application/octet-stream" requestStreamingMode="NEVER" doc:name="Consultar clientes por NIF">
+			<repeatable-in-memory-stream />
+			<http:body><![CDATA[#[vars.clientsQueryXml]]]></http:body>
+			<http:headers><![CDATA[#[{
+	digest: vars.digest,
+	'Content-Type': 'application/xml'
+}]]]></http:headers>
+		</http:request>
+		<ee:transform doc:name="Converter resposta ARTSOFT">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/xml
+---
+read(payload as String {encoding: "windows-1252"}, "application/xml")]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<error-handler>
+			<on-error-continue type="CLIENTES:INVALID_NIF" logException="false">
+				<set-variable variableName="httpStatus" value="400" />
+				<ee:transform doc:name="Resposta de NIF inválido">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/xml
+---
+error: {
+	code: "INVALID_NIF",
+	message: error.description
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-continue>
+			<on-error-continue type="ANY" logException="true">
+				<set-variable variableName="httpStatus" value="502" />
+				<ee:transform doc:name="Resposta de erro ARTSOFT">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/xml
+---
+error: {
+	code: "ARTSOFT_REQUEST_FAILED",
+	message: error.description default "Falha ao consultar o ARTSOFT."
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-continue>
+		</error-handler>
+	</flow>
+
+	<!--
+		POST /test/clientes/insert
+		Cria um cliente com createCli=2 e consulta o número comercial pelo AutoInc retornado.
+	-->
+	<flow name="garrafeira-clientes-test-insert-flow">
+		<http:listener config-ref="Clientes_Test_HTTP_Listener_config" path="/test/clientes/insert" allowedMethods="POST" doc:name="POST inserir cliente de teste">
+			<http:response statusCode="#[vars.httpStatus default 201]">
+				<http:headers><![CDATA[#[{'Content-Type': 'application/json; charset=UTF-8'}]]]></http:headers>
+			</http:response>
+		</http:listener>
+		<choice doc:name="Validar dados obrigatórios">
+			<when expression="#[isEmpty(payload.nif) or isEmpty(payload.nome) or isEmpty(payload.morada) or isEmpty(payload.codigoPostal) or isEmpty(payload.email)]">
+				<raise-error type="CLIENTES:INVALID_REQUEST" description="Campos obrigatórios: nif, nome, morada, codigoPostal e email." />
+			</when>
+			<when expression="#[!((payload.nif as String) matches /^\d{9}$/)]">
+				<raise-error type="CLIENTES:INVALID_REQUEST" description="O NIF deve conter exatamente 9 algarismos." />
+			</when>
+		</choice>
+		<ee:transform doc:name="Criar XML TerFch Update">
+			<ee:variables>
+				<ee:set-variable resource="clientes/TerFch_Insert_Client_Test.dwl" variableName="insertRequestXml" />
+			</ee:variables>
+		</ee:transform>
+		<flow-ref name="garrafeira-testes-login-and-generate-digest" doc:name="Login para inserção" />
+		<http:request method="POST" config-ref="HTTP_Request_configuration" path="/TerFch/Update" outputMimeType="application/octet-stream" requestStreamingMode="NEVER" doc:name="Inserir cliente no ARTSOFT">
+			<repeatable-in-memory-stream />
+			<http:body><![CDATA[#[vars.insertRequestXml]]]></http:body>
+			<http:headers><![CDATA[#[{
+	digest: vars.digest,
+	'Content-Type': 'application/xml'
+}]]]></http:headers>
+		</http:request>
+		<ee:transform doc:name="Ler resultado da inserção">
+			<ee:variables>
+				<ee:set-variable variableName="insertResponse"><![CDATA[%dw 2.0
+output application/java
+---
+read(payload as String {encoding: "windows-1252"}, "application/xml")]]></ee:set-variable>
+				<ee:set-variable variableName="insertRc"><![CDATA[%dw 2.0
+output application/java
+var response = read(payload as String {encoding: "windows-1252"}, "application/xml")
+---
+(response.Entity.@rc default "") as String]]></ee:set-variable>
+				<ee:set-variable variableName="clientAutoInc"><![CDATA[%dw 2.0
+output application/java
+var response = read(payload as String {encoding: "windows-1252"}, "application/xml")
+---
+(response.Entity.@ID default "") as String]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<choice doc:name="Validar inserção ARTSOFT">
+			<when expression="#[vars.insertRc != '0' or isEmpty(vars.clientAutoInc)]">
+				<raise-error type="CLIENTES:INSERT_REJECTED" description="O ARTSOFT não confirmou a inserção ou não devolveu o ID interno." />
+			</when>
+		</choice>
+		<ee:transform doc:name="Criar consulta do número do cliente">
+			<ee:variables>
+				<ee:set-variable resource="clientes/Queries_Query_Client_Number.dwl" variableName="clientNumberQueryXml" />
+			</ee:variables>
+		</ee:transform>
+		<flow-ref name="garrafeira-testes-login-and-generate-digest" doc:name="Novo login para consulta" />
+		<http:request method="POST" config-ref="HTTP_Request_configuration" path="/Queries/Query" outputMimeType="application/octet-stream" requestStreamingMode="NEVER" doc:name="Consultar número atribuído">
+			<repeatable-in-memory-stream />
+			<http:body><![CDATA[#[vars.clientNumberQueryXml]]]></http:body>
+			<http:headers><![CDATA[#[{
+	digest: vars.digest,
+	'Content-Type': 'application/xml'
+}]]]></http:headers>
+		</http:request>
+		<ee:transform doc:name="Responder com IDs do cliente">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+var queryResponse = read(payload as String {encoding: "windows-1252"}, "application/xml")
+---
+{
+	success: true,
+	autoInc: vars.clientAutoInc,
+	clientNumber: (queryResponse..ClientNumber)[0] default null,
+	queryResponse: queryResponse
+}]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<error-handler>
+			<on-error-continue type="CLIENTES:INVALID_REQUEST" logException="false">
+				<set-variable variableName="httpStatus" value="400" />
+				<ee:transform doc:name="Resposta de pedido inválido">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	success: false,
+	code: "INVALID_REQUEST",
+	message: error.description
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-continue>
+			<on-error-continue type="CLIENTES:INSERT_REJECTED" logException="true">
+				<set-variable variableName="httpStatus" value="422" />
+				<ee:transform doc:name="Resposta recusada pelo ARTSOFT">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	success: false,
+	code: "INSERT_REJECTED",
+	rc: vars.insertRc default null,
+	response: vars.insertResponse default null,
+	message: error.description
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-continue>
+			<on-error-continue type="ANY" logException="true">
+				<set-variable variableName="httpStatus" value="502" />
+				<ee:transform doc:name="Resposta de falha ARTSOFT">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	success: false,
+	code: "ARTSOFT_REQUEST_FAILED",
+	autoInc: vars.clientAutoInc default null,
+	message: error.description default "Falha ao comunicar com o ARTSOFT."
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-continue>
+		</error-handler>
+	</flow>
+
+</mule>
