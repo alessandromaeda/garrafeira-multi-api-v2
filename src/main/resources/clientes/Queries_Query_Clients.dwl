@@ -23,6 +23,27 @@ var queryFilter =
             ): {},
             "ClientName" @(
                 "form": "%TerFch.Ter.Nome"
+            ): {},
+            "Address" @(
+                "form": "%TerFch.Ter.Morada"
+            ): {},
+            "PostalCode" @(
+                "form": "%TerFch.Ter.CPPais"
+            ): {},
+            "CountryCode" @(
+                "form": "%TerFch.Pais.Cod"
+            ): {},
+            "Currency" @(
+                "form": "%TerFch.Moed.Abrv"
+            ): {},
+            "ThirdPartyPreference" @(
+                "form": "%TerFch.Cli.PrefT"
+            ): {},
+            "Email" @(
+                "form": "%TerFch.Ter.EMail"
+            ): {},
+            "ModifiedBy" @(
+                "form": "%TerFch.Div.UserMod"
             ): {}
         }
     }

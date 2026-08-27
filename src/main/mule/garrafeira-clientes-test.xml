@@ -49,7 +49,7 @@ http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/
 				<ee:set-payload><![CDATA[%dw 2.0
 output application/xml
 ---
-read(payload as String {encoding: "windows-1252"}, "application/xml")]]></ee:set-payload>
+read(payload as String {encoding: "UTF-8"}, "application/xml")]]></ee:set-payload>
 			</ee:message>
 		</ee:transform>
 		<error-handler>

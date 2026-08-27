@@ -1,0 +1,320 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns:sdc="http://www.mulesoft.org/schema/mule/sdc"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/sdc http://www.mulesoft.org/schema/mule/sdc/current/mule-sdc.xsd">
+
+	<configuration-properties file="properties/products-sf-secure.yaml" />
+
+	<!--
+		Valores locais seguros para permitir o deploy antes da configuração do
+		Salesforce. Propriedades fornecidas no Runtime Manager/JVM têm precedência.
+		O scheduler deve ser ativado com o cron horário após configurar as credenciais.
+	-->
+	<global-property name="productsSfSync.scheduler.cronExpression"
+		value="0 0 0 1 1 ? 2099" />
+	<global-property name="productsSfSync.scheduler.timeZone"
+		value="Europe/Lisbon" />
+	<global-property name="productsSfSync.manual.enabled"
+		value="true" />
+	<global-property name="productsSfSync.page.limit"
+		value="1000" />
+	<global-property name="productsSfSync.page.safetyMaxPerRun"
+		value="1000" />
+	<sdc:sdc-config name="Products_Salesforce_Data_Cloud_Config"
+		doc:name="Products Salesforce Data Cloud">
+		<sdc:oauth-client-credentials-connection
+			consumerKey="${salesforce.dataCloud.consumerKey}"
+			consumerSecret="${salesforce.dataCloud.consumerSecret}"
+			tokenEndpoint="${salesforce.dataCloud.tokenEndpoint}" />
+	</sdc:sdc-config>
+
+	<flow name="products-salesforce-hourly-scheduler-flow">
+		<scheduler doc:name="Produtos para Salesforce a cada hora"
+			disallowConcurrentExecution="true">
+			<scheduling-strategy>
+				<cron expression="${productsSfSync.scheduler.cronExpression}"
+					timeZone="${productsSfSync.scheduler.timeZone}" />
+			</scheduling-strategy>
+		</scheduler>
+		<flow-ref name="products-salesforce-sync-process-flow"
+			doc:name="Executar sincronização de produtos" />
+	</flow>
+
+	<flow name="products-salesforce-manual-flow">
+		<http:listener config-ref="Clientes_Test_HTTP_Listener_config"
+			path="/internal/products/salesforce/sync"
+			allowedMethods="POST"
+			doc:name="POST sincronização manual de produtos">
+			<http:response statusCode="#[vars.httpStatus default 200]" />
+			<http:error-response statusCode="#[vars.httpStatus default 500]">
+				<http:body>#[payload]</http:body>
+			</http:error-response>
+		</http:listener>
+		<set-variable variableName="requestedDate"
+			value="#[attributes.queryParams.date default '']"
+			doc:name="Ler data de referência opcional" />
+		<choice doc:name="Validar data de referência">
+			<when expression="#[!isEmpty(vars.requestedDate) and !((vars.requestedDate as String) matches /^\d{8}(:\d{8})?$/)]">
+				<raise-error type="PRODUCTS-SF:INVALID_DATE"
+					description="O parâmetro date deve usar yyyyMMdd ou yyyyMMdd:yyyyMMdd." />
+			</when>
+		</choice>
+		<choice doc:name="Validar execução manual">
+			<when expression='#[p("productsSfSync.manual.enabled") as Boolean]'>
+				<flow-ref name="products-salesforce-sync-process-flow"
+					doc:name="Executar sincronização de produtos" />
+			</when>
+			<otherwise>
+				<raise-error type="PRODUCTS-SF:MANUAL_DISABLED"
+					description="A execução manual da sincronização de produtos está desabilitada." />
+			</otherwise>
+		</choice>
+		<error-handler>
+			<on-error-propagate type="PRODUCTS-SF:INVALID_DATE"
+				logException="false">
+				<set-variable variableName="httpStatus" value="400" />
+				<ee:transform doc:name="Resposta de data inválida">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	status: "FAILED",
+	message: error.description,
+	correlationId: vars.syncCorrelationId default correlationId
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-propagate>
+			<on-error-propagate type="PRODUCTS-SF:MANUAL_DISABLED"
+				logException="false">
+				<set-variable variableName="httpStatus" value="403" />
+				<ee:transform doc:name="Resposta de execução desabilitada">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	message: error.description,
+	correlationId: vars.syncCorrelationId default correlationId
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-propagate>
+			<on-error-propagate type="ANY" logException="false">
+				<set-variable variableName="httpStatus" value="500" />
+				<ee:transform doc:name="Resposta de falha da sincronização">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	status: "FAILED",
+	lastUpdate: vars.runState.lastUpdate default null,
+	page: vars.runState.page default 0,
+	requestNext: vars.runState.next default null,
+	errorType: (error.errorType.namespace default "UNKNOWN") ++ ":" ++
+		(error.errorType.identifier default "UNKNOWN"),
+	description: error.description default null,
+	correlationId: vars.syncCorrelationId default correlationId
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-propagate>
+		</error-handler>
+	</flow>
+
+	<flow name="products-salesforce-sync-process-flow">
+		<set-variable variableName="syncCorrelationId"
+			value="#[uuid()]"
+			doc:name="Criar correlationId da execução" />
+		<ee:transform doc:name="Calcular ontem e hoje">
+			<ee:variables>
+				<ee:set-variable variableName="runState"><![CDATA[%dw 2.0
+output application/java
+var suppliedDate = vars.requestedDate default ""
+var suppliedParts = (suppliedDate as String) splitBy ":"
+var today =
+	if (isEmpty(suppliedDate as String))
+		(now() >> p("productsSfSync.scheduler.timeZone")) as Date
+	else
+		(suppliedParts[-1]) as Date {format: "yyyyMMdd"}
+var yesterday = today - |P1D|
+var lastUpdate =
+	if (sizeOf(suppliedParts) == 2)
+		suppliedParts[0] ++ ":" ++ suppliedParts[1]
+	else
+		(yesterday as String {format: "yyyyMMdd"}) ++ ":" ++
+		(today as String {format: "yyyyMMdd"})
+---
+{
+	lastUpdate: lastUpdate,
+	page: 0,
+	next: null,
+	hasMore: true,
+	totalRecords: 0,
+	seenCursors: []
+}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+
+		<logger level="INFO" doc:name="Log início"
+			message='#[write({event: "products-sf-sync-started", lastUpdate: vars.runState.lastUpdate, correlationId: vars.syncCorrelationId}, "application/json", {indent: false}) as String]' />
+
+		<foreach doc:name="Paginar produtos sequencialmente"
+			collection='#[1 to (p("productsSfSync.page.safetyMaxPerRun") as Number)]'>
+			<choice doc:name="Ainda existe página?">
+				<when expression="#[vars.runState.hasMore]">
+					<flow-ref name="products-salesforce-page-subflow"
+						doc:name="Processar página de produtos" />
+				</when>
+			</choice>
+		</foreach>
+
+		<choice doc:name="Validar limite de segurança">
+			<when expression="#[vars.runState.hasMore]">
+				<raise-error type="PRODUCTS-SF:SAFETY_LIMIT"
+					description="O limite de segurança foi atingido e o ARTSOFT ainda devolveu next." />
+			</when>
+		</choice>
+
+		<logger level="INFO" doc:name="Log conclusão"
+			message='#[write({event: "products-sf-sync-completed", lastUpdate: vars.runState.lastUpdate, pages: vars.runState.page, records: vars.runState.totalRecords, correlationId: vars.syncCorrelationId}, "application/json", {indent: false}) as String]' />
+
+		<ee:transform doc:name="Resumo da execução">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	status: "COMPLETED",
+	lastUpdate: vars.runState.lastUpdate,
+	pages: vars.runState.page,
+	records: vars.runState.totalRecords,
+	correlationId: vars.syncCorrelationId
+}]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+
+		<error-handler>
+			<on-error-propagate type="ANY" logException="true">
+				<logger level="ERROR" doc:name="Log falha"
+					message='#[write({event: "products-sf-sync-failed", lastUpdate: vars.runState.lastUpdate default null, page: (vars.runState.page default 0) + 1, requestNext: vars.runState.next default null, errorType: (error.errorType.namespace default "UNKNOWN") ++ ":" ++ (error.errorType.identifier default "UNKNOWN"), statusCode: error.errorMessage.attributes.statusCode default null, description: error.description default null, correlationId: vars.syncCorrelationId default correlationId}, "application/json", {indent: false}) as String]' />
+			</on-error-propagate>
+		</error-handler>
+	</flow>
+
+	<sub-flow name="products-salesforce-page-subflow">
+		<set-variable variableName="requestedNext"
+			value="#[vars.runState.next]"
+			doc:name="Guardar cursor solicitado" />
+
+		<ee:transform doc:name="Montar consulta completa e paginada">
+			<ee:variables>
+				<ee:set-variable
+					resource="consultas/Queries_Query_Products_Salesforce.dwl"
+					variableName="productsQueryXml" />
+			</ee:variables>
+		</ee:transform>
+
+		<flow-ref name="garrafeira-testes-login-and-generate-digest"
+			doc:name="Login e digest ARTSOFT" />
+		<http:request method="POST"
+			config-ref="HTTP_Request_configuration"
+			path="/Queries/Query"
+			outputMimeType="application/octet-stream"
+			requestStreamingMode="NEVER"
+			doc:name="Consultar página de produtos">
+			<ee:repeatable-file-store-stream
+				inMemorySize="1"
+				bufferUnit="MB" />
+			<http:body>#[vars.productsQueryXml]</http:body>
+			<http:headers><![CDATA[#[{
+	digest: vars.digest,
+	'Content-Type': 'application/xml'
+}]]]></http:headers>
+		</http:request>
+
+		<ee:transform doc:name="Interpretar página ARTSOFT">
+			<ee:variables>
+				<ee:set-variable variableName="artsoftPage"><![CDATA[%dw 2.0
+output application/java
+var response = read(payload as String {encoding: "windows-1252"}, "application/xml")
+var cursor = response.TBL.@next default null
+---
+{
+	data: response.TBL.*Stk default [],
+	next:
+		if (cursor == null or isBlank(cursor as String))
+			null
+		else
+			cursor as String
+}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+
+		<logger level="INFO" doc:name="Log página consultada"
+			message='#[write({event: "products-sf-page-queried", lastUpdate: vars.runState.lastUpdate, page: vars.runState.page + 1, requestNext: vars.requestedNext, returnedNext: vars.artsoftPage.next, records: sizeOf(vars.artsoftPage.data), correlationId: vars.syncCorrelationId}, "application/json", {indent: false}) as String]' />
+
+		<choice doc:name="Validar cursor repetido">
+			<when expression="#[vars.artsoftPage.next != null and (vars.artsoftPage.next == vars.requestedNext or (vars.runState.seenCursors contains vars.artsoftPage.next))]">
+				<raise-error type="PRODUCTS-SF:CURSOR_LOOP"
+					description="O ARTSOFT devolveu um cursor next repetido." />
+			</when>
+		</choice>
+
+		<choice doc:name="Enviar somente página com dados">
+			<when expression="#[!isEmpty(vars.artsoftPage.data)]">
+				<ee:transform doc:name="Payload completo para Salesforce">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	data: vars.artsoftPage.data
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+				<sdc:insert-objects
+					config-ref="Products_Salesforce_Data_Cloud_Config"
+					sourceNameUriParam="${salesforce.dataCloud.products.sourceName}"
+					objectNameUriParam="${salesforce.dataCloud.products.objectName}"
+					doc:name="Enviar página ao Salesforce Data Cloud" />
+				<logger level="INFO" doc:name="Log página aceita"
+					message='#[%dw 2.0&#10;output text/plain&#10;---&#10;write({event: "products-sf-page-accepted", page: vars.runState.page + 1, records: sizeOf(vars.artsoftPage.data), statusCode: attributes.statusCode default null, response: payload, correlationId: vars.syncCorrelationId}, "application/json", {indent: false})]' />
+			</when>
+			<otherwise>
+				<logger level="INFO" doc:name="Log página vazia"
+					message='#[write({event: "products-sf-page-empty", lastUpdate: vars.runState.lastUpdate, records: 0, correlationId: vars.syncCorrelationId}, "application/json", {indent: false}) as String]' />
+			</otherwise>
+		</choice>
+
+		<ee:transform doc:name="Avançar estado somente em memória">
+			<ee:variables>
+				<ee:set-variable variableName="runState"><![CDATA[%dw 2.0
+output application/java
+---
+vars.runState ++ {
+	page: vars.runState.page + 1,
+	next: vars.artsoftPage.next,
+	hasMore: vars.artsoftPage.next != null,
+	totalRecords: vars.runState.totalRecords + sizeOf(vars.artsoftPage.data),
+	seenCursors:
+		if (vars.artsoftPage.next == null)
+			vars.runState.seenCursors
+		else
+			vars.runState.seenCursors ++ [vars.artsoftPage.next]
+}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+	</sub-flow>
+</mule>

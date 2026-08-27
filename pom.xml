@@ -63,6 +63,22 @@
 			<version>2.0.5</version>
 			<classifier>mule-plugin</classifier>
 		</dependency>
+		<dependency>
+			<groupId>com.mulesoft.connectors</groupId>
+			<artifactId>mule4-sdc-connector</artifactId>
+			<version>1.4.0</version>
+			<classifier>mule-plugin</classifier>
+		</dependency>
+		<!--
+			Resolver DNS nativo necessário no Studio/macOS ARM para domínios
+			Salesforce acessados pelo cliente HTTP interno do conector SDC.
+		-->
+		<dependency>
+			<groupId>io.netty</groupId>
+			<artifactId>netty-resolver-dns-native-macos</artifactId>
+			<version>4.2.15.Final</version>
+			<classifier>osx-aarch_64</classifier>
+		</dependency>
 	</dependencies>
 
 	<repositories>

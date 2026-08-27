@@ -1,0 +1,8 @@
+salesforce:
+  dataCloud:
+    consumerKey: "3MVG9WWZQEHBhj5Zf7.kte2wSsW9NZylA7iSzatG_7HC_I2e3rzuk86LmgN1flK5na18gDiQIIR9Sp6pE4C5I"
+    consumerSecret: "C4113B5E9D86FAE72510CCC22A6FC9C671D5F38C724DA27F83CEDFC2B71AC64F"
+    tokenEndpoint: "https://innovation-flow-32042--gasodev.sandbox.my.salesforce.com"
+    products:
+      sourceName: "mulesoftingestion"
+      objectName: "products"
