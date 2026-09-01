@@ -18,7 +18,9 @@ var client = payload
             "Moed.Abrv": client.moeda default "EUR",
             "Cli.PrefT": client.preferenciaTerceiro default 1,
             "Ter.EMail": client.email,
-            ("Div.UserMod": client.utilizadorModificacao) if (!isEmpty(client.utilizadorModificacao))
+            ("Div.UserMod": client.utilizadorModificacao) if (!isEmpty(client.utilizadorModificacao)),
+            "Cli.Marcas": client.cliMarcas,
+            "For.Marcas": client.forMarcas
         }
     }
 }

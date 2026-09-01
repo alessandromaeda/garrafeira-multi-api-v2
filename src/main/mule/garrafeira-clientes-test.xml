@@ -326,7 +326,7 @@ var queryResponse = read(payload as String {encoding: "windows-1252"}, "applicat
 {
 	success: true,
 	autoInc: vars.clientAutoInc,
-	clientNumber: (queryResponse..ClientNumber)[0] default null,
+	clientNumber: ((queryResponse.TBL.*CLI)[0].'TerFch.Cli.Numero') default null,
 	queryResponse: queryResponse
 }]]></ee:set-payload>
 			</ee:message>

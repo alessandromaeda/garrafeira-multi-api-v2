@@ -64,12 +64,15 @@ curl --request POST \
     "email": "geral@noesis.pt",
     "paisCod": 0,
     "moeda": "EUR",
-    "preferenciaTerceiro": 1
+    "preferenciaTerceiro": 1,
+    "utilizadorModificacao": 2,
+    "cliMarcas": "00000000000000000000000000000000",
+    "forMarcas": "00000000000000000000011111111111"
   }'
 ```
 
-Os campos obrigatórios são `nif`, `nome`, `morada`, `codigoPostal` e `email`. Os restantes assumem os valores mostrados no exemplo. `Div.UserMod` só é enviado ao ARTSOFT quando `utilizadorModificacao` possuir um valor.
+Os campos obrigatórios são `nif`, `nome`, `morada`, `codigoPostal` e `email`. Os restantes assumem os valores mostrados no exemplo. `utilizadorModificacao`, `cliMarcas` e `forMarcas` são enviados respetivamente como `Div.UserMod`, `Cli.Marcas` e `For.Marcas`. `Div.UserMod` só é incluído quando `utilizadorModificacao` possuir um valor.
 
-Depois de `/TerFch/Update` devolver `rc="0"` e o `ID`, o flow executa `/Queries/Query` com `TerFch|AutoInc=<ID>` e devolve o número comercial do cliente.
+Depois de `/TerFch/Update` devolver `rc="0"` e o `ID`, o flow executa `/Queries/Query` com `TerFch|AutoInc=<ID>`. A consulta pós-insert pede os 487 campos presentes na ficha completa de terceiros/clientes e devolve tanto o número comercial quanto a resposta XML completa do ARTSOFT.
 
 > Atenção: este endpoint escreve dados reais no ARTSOFT configurado. O nome `/TerFch/Update` não comprova comportamento de upsert. Até existir documentação ou teste conclusivo, a operação com `createCli="2"` deve ser tratada como inserção.
