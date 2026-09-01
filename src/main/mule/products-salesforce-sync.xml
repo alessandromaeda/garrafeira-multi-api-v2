@@ -215,7 +215,7 @@ output application/json
 
 	<sub-flow name="products-salesforce-page-subflow">
 		<set-variable variableName="requestedNext"
-			value="#[vars.runState.next]"
+			value="#[(vars.runState.next default '') as String]"
 			doc:name="Guardar cursor solicitado" />
 
 		<ee:transform doc:name="Montar consulta completa e paginada">

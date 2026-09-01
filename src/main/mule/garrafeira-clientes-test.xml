@@ -17,6 +17,7 @@ http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/
 	<!--
 		GET /test/clientes             -> lista até 100 terceiros/clientes
 		GET /test/clientes?nif=...     -> procura exata pelo NIF
+		GET /test/clientes/count       -> conta clientes válidos usando paginação
 	-->
 	<flow name="garrafeira-clientes-test-query-flow">
 		<http:listener config-ref="Clientes_Test_HTTP_Listener_config" path="/test/clientes" allowedMethods="GET" doc:name="GET clientes de teste">
@@ -85,6 +86,158 @@ error: {
 	</flow>
 
 	<!--
+		GET /test/clientes/count
+		GET /test/clientes/count?lastUpdateTime=0000:2359
+		Conta os clientes válidos encontrados em todas as páginas devolvidas pelo ARTSOFT.
+	-->
+	<flow name="garrafeira-clientes-test-count-flow">
+		<http:listener config-ref="Clientes_Test_HTTP_Listener_config" path="/test/clientes/count" allowedMethods="GET" doc:name="GET quantidade de clientes">
+			<http:response statusCode="#[vars.httpStatus default 200]">
+				<http:headers><![CDATA[#[{'Content-Type': 'application/json; charset=UTF-8'}]]]></http:headers>
+			</http:response>
+		</http:listener>
+		<set-variable variableName="lastUpdateTimeValue" value="#[(attributes.queryParams.lastUpdateTime default '0000:2359') as String]" doc:name="Ler intervalo de horas" />
+		<choice doc:name="Validar intervalo de horas">
+			<when expression="#[!isEmpty(vars.lastUpdateTimeValue) and !((vars.lastUpdateTimeValue as String) matches /^([01]\d|2[0-3])[0-5]\d:([01]\d|2[0-3])[0-5]\d$/)]">
+				<raise-error type="CLIENTES:INVALID_TIME_RANGE" description="lastUpdateTime deve usar o formato HHmm:HHmm, por exemplo 0000:2359." />
+			</when>
+		</choice>
+		<ee:transform doc:name="Inicializar contagem">
+			<ee:variables>
+				<ee:set-variable variableName="countState"><![CDATA[%dw 2.0
+output application/java
+---
+{
+	page: 0,
+	next: null,
+	hasMore: true,
+	totalRecords: 0,
+	seenCursors: []
+}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<foreach collection="#[1 to 1000]" doc:name="Paginar clientes sequencialmente">
+			<choice doc:name="Ainda existe página?">
+				<when expression="#[vars.countState.hasMore]">
+					<flow-ref name="garrafeira-clientes-test-count-page-subflow" doc:name="Contar página de clientes" />
+				</when>
+			</choice>
+		</foreach>
+		<choice doc:name="Validar limite de segurança">
+			<when expression="#[vars.countState.hasMore]">
+				<raise-error type="CLIENTES:COUNT_SAFETY_LIMIT" description="O limite de segurança de 1000 páginas foi atingido e o ARTSOFT ainda devolveu next." />
+			</when>
+		</choice>
+		<ee:transform doc:name="Responder quantidade de clientes">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	total: vars.countState.totalRecords,
+	pages: vars.countState.page,
+	pageSize: 100,
+	complete: !vars.countState.hasMore,
+	lastUpdateDate: "20250402:20991231",
+	lastUpdateTime: vars.lastUpdateTimeValue
+}]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<error-handler>
+			<on-error-continue type="CLIENTES:INVALID_TIME_RANGE" logException="false">
+				<set-variable variableName="httpStatus" value="400" />
+				<ee:transform doc:name="Resposta de intervalo inválido">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	success: false,
+	code: "INVALID_TIME_RANGE",
+	message: error.description
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-continue>
+			<on-error-continue type="ANY" logException="true">
+				<set-variable variableName="httpStatus" value="502" />
+				<ee:transform doc:name="Resposta de falha na contagem">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	success: false,
+	code: "ARTSOFT_COUNT_FAILED",
+	pages: vars.countState.page default 0,
+	partialTotal: vars.countState.totalRecords default 0,
+	message: error.description default "Falha ao contar os clientes no ARTSOFT."
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-continue>
+		</error-handler>
+	</flow>
+
+	<sub-flow name="garrafeira-clientes-test-count-page-subflow">
+		<set-variable variableName="nextValue" value="#[(vars.countState.next default '') as String]" doc:name="Guardar cursor solicitado" />
+		<ee:transform doc:name="Criar consulta paginada de clientes">
+			<ee:variables>
+				<ee:set-variable resource="clientes/Queries_Count_Clients.dwl" variableName="clientsCountQueryXml" />
+			</ee:variables>
+		</ee:transform>
+		<flow-ref name="garrafeira-testes-login-and-generate-digest" doc:name="Login e digest para contagem" />
+		<http:request method="POST" config-ref="HTTP_Request_configuration" path="/Queries/Query" outputMimeType="application/octet-stream" requestStreamingMode="NEVER" doc:name="Consultar página de clientes">
+			<repeatable-in-memory-stream />
+			<http:body><![CDATA[#[vars.clientsCountQueryXml]]]></http:body>
+			<http:headers><![CDATA[#[{
+	digest: vars.digest,
+	'Content-Type': 'application/xml'
+}]]]></http:headers>
+		</http:request>
+		<ee:transform doc:name="Interpretar página de clientes">
+			<ee:variables>
+				<ee:set-variable variableName="clientsCountPage"><![CDATA[%dw 2.0
+output application/java
+var response = read(payload as String {encoding: "windows-1252"}, "application/xml")
+var cursor = response.TBL.@next default null
+---
+{
+	records: sizeOf(response.TBL.*CLI default []),
+	next:
+		if (cursor == null or isBlank(cursor as String))
+			null
+		else
+			cursor as String
+}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<choice doc:name="Validar cursor da contagem">
+			<when expression="#[vars.clientsCountPage.next != null and (vars.clientsCountPage.next == vars.nextValue or (vars.countState.seenCursors contains vars.clientsCountPage.next))]">
+				<raise-error type="CLIENTES:COUNT_CURSOR_LOOP" description="O ARTSOFT devolveu um cursor next repetido durante a contagem de clientes." />
+			</when>
+		</choice>
+		<ee:transform doc:name="Acumular quantidade de clientes">
+			<ee:variables>
+				<ee:set-variable variableName="countState"><![CDATA[%dw 2.0
+output application/java
+---
+vars.countState ++ {
+	page: vars.countState.page + 1,
+	next: vars.clientsCountPage.next,
+	hasMore: vars.clientsCountPage.next != null,
+	totalRecords: vars.countState.totalRecords + vars.clientsCountPage.records,
+	seenCursors:
+		if (vars.clientsCountPage.next == null)
+			vars.countState.seenCursors
+		else
+			vars.countState.seenCursors ++ [vars.clientsCountPage.next]
+}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+	</sub-flow>
+
+	<!--
 		POST /test/clientes/insert
 		Cria um cliente com createCli=2 e consulta o número comercial pelo AutoInc retornado.
 	-->
@@ -94,6 +247,17 @@ error: {
 				<http:headers><![CDATA[#[{'Content-Type': 'application/json; charset=UTF-8'}]]]></http:headers>
 			</http:response>
 		</http:listener>
+		<ee:transform doc:name="Interpretar corpo JSON">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/java
+---
+if (payload is Object)
+	payload
+else
+	read(payload, "application/json")]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
 		<choice doc:name="Validar dados obrigatórios">
 			<when expression="#[isEmpty(payload.nif) or isEmpty(payload.nome) or isEmpty(payload.morada) or isEmpty(payload.codigoPostal) or isEmpty(payload.email)]">
 				<raise-error type="CLIENTES:INVALID_REQUEST" description="Campos obrigatórios: nif, nome, morada, codigoPostal e email." />

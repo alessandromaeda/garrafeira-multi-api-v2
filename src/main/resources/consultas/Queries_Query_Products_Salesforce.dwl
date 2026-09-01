@@ -1,14 +1,19 @@
-%dw 2.0 
+%dw 2.0
 output application/xml writeDeclaration = false
 
+var requestedNext = (vars.requestedNext default "") as String
+var runState = (vars.runState default {}) as Object
+var lastUpdate = (runState.lastUpdate default "") as String
+var limit = (p("productsSfSync.page.limit") default 100) as Number
+
 var next =
-	if (isEmpty(vars.requestedNext default ""))
+	if (isEmpty(requestedNext))
 		""
 	else
-		"|#" ++ (vars.requestedNext as String)
+		"|#" ++ requestedNext
 
 var query =
-	"StkFch|DtUltAct|Data=" ++ vars.runState.lastUpdate ++
+	"StkFch|DtUltAct|Data=" ++ lastUpdate ++
 	"|? \$inRange(%StkFch.Cod.Codigo,01000,AA999999)" ++
 	next
 
@@ -16,7 +21,7 @@ var query =
 "TBL" @(
 	"type": "list",
 	"name": "Stk",
-	"end": p("productsSfSync.page.limit") as Number,
+	"end": limit,
 	"query": query
 ): {
 	"defcol": {
