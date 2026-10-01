@@ -16,6 +16,8 @@ var queryFilter = if ( isEmpty(nif) ) "TerFch|AutoInc=1:999999" else "TerFch|NrI
 			"CountryAbbreviation" @("form": "%TerFch.Pais.Abrv"): {},
 			"Currency" @("form": "%TerFch.Moed.Abrv"): {},
 			"ThirdPartyPreference" @("form": "%TerFch.Cli.PrefT"): {},
+			"SupplierPrefix" @("form": "%TerFch.For.PrefS"): {},
+			"SupplierPrefixPosition" @("form": "%TerFch.For.PrefT"): {},
 			"Email" @("form": "%TerFch.Ter.EMail"): {},
 			"ModifiedBy" @("form": "%TerFch.Div.UserMod"): {}
 		}

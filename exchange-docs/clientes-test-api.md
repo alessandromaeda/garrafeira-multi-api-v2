@@ -8,7 +8,7 @@ Esta API fica separada dos flows agendados de `garrafeira-testes.xml` e escuta s
 GET http://localhost:8082/test/clientes
 ```
 
-A consulta pede ao ARTSOFT no máximo 100 registos e devolve número do cliente, NIF, nome, morada, código postal, país, moeda, preferência do terceiro, e-mail e utilizador da última modificação.
+A consulta pede ao ARTSOFT no máximo 100 registos e devolve número do cliente, NIF, nome, morada, código postal, país, moeda, preferência do terceiro, prefixo e posição contabilística de fornecedor, e-mail e utilizador da última modificação.
 
 ## 2. Contar clientes válidos
 
