@@ -1,0 +1,427 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:file="http://www.mulesoft.org/schema/mule/file"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/file http://www.mulesoft.org/schema/mule/file/current/mule-file.xsd">
+
+	<!--
+		Extração pontual dos preços negociados vigentes do ARTSOFT para um CSV
+		(carga inicial para o Salesforce). Execução manual, sem scheduler.
+
+		POST http://127.0.0.1:8082/internal/negotiated-prices/export
+		Filtro principal: DATA FIM do preço (StkRft.Negoc.DtFim)
+		POST ...?dtFimFrom=20261106      (opcional; o filtro base da query já é DtFim >= hoje)  DtFim >= dtFimFrom
+		POST ...?dtFim=20270206         (opcional; padrão: sem limite)  DtFim <= dtFim
+		Filtro opcional: DATA INÍCIO do preço (StkRft.Negoc.DtIni). Só atua se for informado
+		POST ...?dtIniFrom=20260101     (opcional)                      DtIni >= dtIniFrom
+		POST ...?dtIni=20261106          (opcional)                      DtIni <= dtIni
+		POST ...?maxPages=2&limit=5     (opcional, para testar com poucas páginas/linhas)
+		Os parâmetros combinam: ?dtFimFrom=20261106&dtFim=20270206
+
+		O CSV é gravado em ${user.home}/artsoft-export/saida
+	-->
+	<global-property name="negotiatedPricesExport.manual.enabled" value="true" />
+	<global-property name="negotiatedPricesExport.page.limit" value="1000" />
+	<global-property name="negotiatedPricesExport.page.safetyMaxPerRun" value="5000" />
+
+	<file:config name="NegotiatedPrices_Export_File_Config" doc:name="File Config">
+		<file:connection workingDir="${user.home}/artsoft-export/saida" />
+	</file:config>
+
+	<flow name="negotiated-prices-export-manual-flow">
+		<http:listener config-ref="Clientes_Test_HTTP_Listener_config"
+			path="/internal/negotiated-prices/export"
+			allowedMethods="POST"
+			doc:name="POST extração manual de preços negociados">
+			<http:response statusCode="#[vars.httpStatus default 200]" />
+			<http:error-response statusCode="#[vars.httpStatus default 500]">
+				<http:body>#[payload]</http:body>
+			</http:error-response>
+		</http:listener>
+		<set-variable variableName="requestedMaxPages"
+			value="#[attributes.queryParams.maxPages default '']"
+			doc:name="Ler maxPages opcional" />
+		<set-variable variableName="requestedLimit"
+			value="#[attributes.queryParams.limit default '']"
+			doc:name="Ler limit opcional" />
+		<set-variable variableName="requestedFrom"
+			value="#[attributes.queryParams.dtFimFrom default '']"
+			doc:name="Ler dtFimFrom opcional" />
+		<set-variable variableName="requestedUntil"
+			value="#[attributes.queryParams.dtFim default '']"
+			doc:name="Ler dtFim opcional" />
+		<set-variable variableName="requestedIniFrom"
+			value="#[attributes.queryParams.dtIniFrom default '']"
+			doc:name="Ler dtIniFrom opcional" />
+		<set-variable variableName="requestedIniUntil"
+			value="#[attributes.queryParams.dtIni default '']"
+			doc:name="Ler dtIni opcional" />
+		<choice doc:name="Validar parâmetros">
+			<when expression="#[(!isEmpty(vars.requestedMaxPages) and !((vars.requestedMaxPages as String) matches /^\d{1,5}$/)) or (!isEmpty(vars.requestedLimit) and !((vars.requestedLimit as String) matches /^\d{1,5}$/)) or (!isEmpty(vars.requestedFrom) and !((vars.requestedFrom as String) matches /^\d{8}$/)) or (!isEmpty(vars.requestedUntil) and !((vars.requestedUntil as String) matches /^\d{8}$/)) or (!isEmpty(vars.requestedIniFrom) and !((vars.requestedIniFrom as String) matches /^\d{8}$/)) or (!isEmpty(vars.requestedIniUntil) and !((vars.requestedIniUntil as String) matches /^\d{8}$/))]">
+				<raise-error type="NEGOTIATED-EXPORT:INVALID_PARAMS"
+					description="maxPages e limit devem ser números inteiros positivos; dtFimFrom, dtFim, dtIniFrom e dtIni devem usar yyyyMMdd." />
+			</when>
+		</choice>
+		<choice doc:name="Validar execução manual">
+			<when expression='#[p("negotiatedPricesExport.manual.enabled") as Boolean]'>
+				<flow-ref name="negotiated-prices-export-process-flow"
+					doc:name="Executar extração de preços negociados" />
+			</when>
+			<otherwise>
+				<raise-error type="NEGOTIATED-EXPORT:MANUAL_DISABLED"
+					description="A extração manual de preços negociados está desabilitada." />
+			</otherwise>
+		</choice>
+		<error-handler>
+			<on-error-propagate type="NEGOTIATED-EXPORT:INVALID_PARAMS"
+				logException="false">
+				<set-variable variableName="httpStatus" value="400" />
+				<ee:transform doc:name="Resposta de parâmetros inválidos">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	status: "FAILED",
+	message: error.description,
+	correlationId: vars.exportCorrelationId default correlationId
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-propagate>
+			<on-error-propagate type="NEGOTIATED-EXPORT:MANUAL_DISABLED"
+				logException="false">
+				<set-variable variableName="httpStatus" value="403" />
+				<ee:transform doc:name="Resposta de execução desabilitada">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	message: error.description,
+	correlationId: vars.exportCorrelationId default correlationId
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-propagate>
+			<on-error-propagate type="ANY" logException="false">
+				<set-variable variableName="httpStatus" value="500" />
+				<ee:transform doc:name="Resposta de falha da extração">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+import try from dw::Runtime
+output application/json
+var artsoftBody = try(() -> (error.errorMessage.payload as String)).result default null
+---
+{
+	status: "FAILED",
+	page: (vars.runState.page default 0) + 1,
+	requestNext: vars.runState.next default null,
+	recordsWrittenBeforeFailure: vars.runState.total default 0,
+	fileName: vars.runState.fileName default null,
+	errorType: (error.errorType.namespace default "UNKNOWN") ++ ":" ++
+		(error.errorType.identifier default "UNKNOWN"),
+	description: error.description default null,
+	artsoftStatusCode: error.errorMessage.attributes.statusCode default null,
+	artsoftResponse:
+		if (artsoftBody == null or isEmpty(artsoftBody))
+			null
+		else if (sizeOf(artsoftBody) > 500)
+			artsoftBody[0 to 499]
+		else
+			artsoftBody,
+	correlationId: vars.exportCorrelationId default correlationId
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-propagate>
+		</error-handler>
+	</flow>
+
+	<flow name="negotiated-prices-export-process-flow">
+		<set-variable variableName="exportCorrelationId"
+			value="#[uuid()]"
+			doc:name="Criar correlationId da execução" />
+		<set-variable variableName="outputDirectory"
+			value="${user.home}/artsoft-export/saida"
+			doc:name="Pasta de saída" />
+
+		<ee:transform doc:name="Estado inicial da extração">
+			<ee:variables>
+				<ee:set-variable variableName="runState"><![CDATA[%dw 2.0
+output application/java
+var requestedLimit = (vars.requestedLimit default "") as String
+var requestedMaxPages = (vars.requestedMaxPages default "") as String
+var requestedFrom = (vars.requestedFrom default "") as String
+var requestedUntil = (vars.requestedUntil default "") as String
+var requestedIniFrom = (vars.requestedIniFrom default "") as String
+var requestedIniUntil = (vars.requestedIniUntil default "") as String
+---
+{
+	limit:
+		if (isEmpty(requestedLimit))
+			(p("negotiatedPricesExport.page.limit") as Number)
+		else
+			(requestedLimit as Number),
+	maxPages:
+		if (isEmpty(requestedMaxPages))
+			(p("negotiatedPricesExport.page.safetyMaxPerRun") as Number)
+		else
+			(requestedMaxPages as Number),
+	limitedByRequest: !isEmpty(requestedMaxPages),
+	// dtFimFrom: só tem valor se informado manualmente; senão fica null
+	from:
+		if (isEmpty(requestedFrom))
+			null
+		else
+			requestedFrom,
+	until:
+		if (isEmpty(requestedUntil))
+			null
+		else
+			requestedUntil,
+	iniFrom:
+		if (isEmpty(requestedIniFrom))
+			null
+		else
+			requestedIniFrom,
+	iniUntil:
+		if (isEmpty(requestedIniUntil))
+			null
+		else
+			requestedIniUntil,
+	fileStarted: false,
+	fileName: "precos-negociados-" ++ (now() as String {format: "yyyyMMdd-HHmmss"}) ++ ".csv",
+	page: 0,
+	next: null,
+	hasMore: true,
+	total: 0,
+	totalRead: 0,
+	seenCursors: [],
+	allKeys: []
+}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+
+		<choice doc:name="Validar período">
+			<when expression="#[vars.runState.until != null and vars.runState.from != null and vars.runState.until &lt; vars.runState.from]">
+				<raise-error type="NEGOTIATED-EXPORT:INVALID_PARAMS"
+					description="dtFim não pode ser anterior a dtFimFrom." />
+			</when>
+			<when expression="#[vars.runState.iniFrom != null and vars.runState.iniUntil != null and vars.runState.iniUntil &lt; vars.runState.iniFrom]">
+				<raise-error type="NEGOTIATED-EXPORT:INVALID_PARAMS"
+					description="dtIni não pode ser anterior a dtIniFrom." />
+			</when>
+		</choice>
+
+		<logger level="INFO" doc:name="Log início"
+			message='#[write({event: "negotiated-prices-export-started", fileName: vars.runState.fileName, dtFimFrom: vars.runState.from, dtFim: vars.runState.until, dtIniFrom: vars.runState.iniFrom, dtIni: vars.runState.iniUntil, limit: vars.runState.limit, maxPages: vars.runState.maxPages, correlationId: vars.exportCorrelationId}, "application/json", {indent: false}) as String]' />
+
+		<foreach doc:name="Paginar preços negociados sequencialmente"
+			collection="#[1 to vars.runState.maxPages]">
+			<choice doc:name="Ainda existe página?">
+				<when expression="#[vars.runState.hasMore]">
+					<flow-ref name="negotiated-prices-export-page-subflow"
+						doc:name="Processar página de preços negociados" />
+				</when>
+			</choice>
+		</foreach>
+
+		<choice doc:name="Validar limite de segurança">
+			<when expression="#[vars.runState.hasMore and !vars.runState.limitedByRequest]">
+				<raise-error type="NEGOTIATED-EXPORT:SAFETY_LIMIT"
+					description="O limite de segurança foi atingido e o ARTSOFT ainda devolveu next." />
+			</when>
+		</choice>
+
+		<ee:transform doc:name="Resumo da execução">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+import take from dw::core::Arrays
+output application/json
+var repeated = (vars.runState.allKeys groupBy $) filterObject ((value, key) -> sizeOf(value) > 1)
+---
+{
+	status:
+		if (vars.runState.hasMore)
+			"PARTIAL_TEST_RUN"
+		else
+			"COMPLETED",
+	dtFimFrom: vars.runState.from,
+	dtFim: vars.runState.until,
+	dtIniFrom: vars.runState.iniFrom,
+	dtIni: vars.runState.iniUntil,
+	pages: vars.runState.page,
+	recordsRead: vars.runState.totalRead,
+	recordsFilteredOut: vars.runState.totalRead - vars.runState.total,
+	records: vars.runState.total,
+	outputDirectory: vars.outputDirectory,
+	fileName:
+		if (vars.runState.total > 0)
+			vars.runState.fileName
+		else
+			null,
+	clientProductWithMoreThanOnePrice: sizeOf(repeated),
+	clientProductWithMoreThanOnePriceSample: (repeated pluck ((value, key) -> {
+		clientAndProduct: key as String,
+		prices: sizeOf(value)
+	})) take 50,
+	correlationId: vars.exportCorrelationId
+}]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+
+		<logger level="INFO" doc:name="Log conclusão"
+			message='#[%dw 2.0&#10;output text/plain&#10;---&#10;write({event: "negotiated-prices-export-completed", status: payload.status, pages: payload.pages, records: payload.records, fileName: payload.fileName, correlationId: vars.exportCorrelationId}, "application/json", {indent: false})]' />
+
+		<error-handler>
+			<on-error-propagate type="ANY" logException="true">
+				<logger level="ERROR" doc:name="Log falha"
+					message='#[write({event: "negotiated-prices-export-failed", page: (vars.runState.page default 0) + 1, requestNext: vars.runState.next default null, errorType: (error.errorType.namespace default "UNKNOWN") ++ ":" ++ (error.errorType.identifier default "UNKNOWN"), description: error.description default null, correlationId: vars.exportCorrelationId default null}, "application/json", {indent: false}) as String]' />
+			</on-error-propagate>
+		</error-handler>
+	</flow>
+
+	<sub-flow name="negotiated-prices-export-page-subflow">
+		<set-variable variableName="requestedNext"
+			value="#[(vars.runState.next default '') as String]"
+			doc:name="Guardar cursor solicitado" />
+
+		<ee:transform doc:name="Montar consulta paginada">
+			<ee:variables>
+				<ee:set-variable
+					resource="consultas/Queries_Query_NegotiatedPrices_Export.dwl"
+					variableName="negotiatedPricesQueryXml" />
+			</ee:variables>
+		</ee:transform>
+
+		<flow-ref name="garrafeira-testes-login-and-generate-digest"
+			doc:name="Login e digest ARTSOFT" />
+		<http:request method="POST"
+			config-ref="HTTP_Request_configuration"
+			path="/Queries/Query"
+			outputMimeType="application/octet-stream"
+			requestStreamingMode="NEVER"
+			doc:name="Consultar página de preços negociados">
+			<ee:repeatable-file-store-stream
+				inMemorySize="1"
+				bufferUnit="MB" />
+			<http:body>#[vars.negotiatedPricesQueryXml]</http:body>
+			<http:headers><![CDATA[#[{
+	digest: vars.digest,
+	'Content-Type': 'application/xml'
+}]]]></http:headers>
+		</http:request>
+
+		<ee:transform doc:name="Interpretar página ARTSOFT">
+			<ee:variables>
+				<ee:set-variable variableName="artsoftPage"><![CDATA[%dw 2.0
+output application/java
+var response = read(payload as String {encoding: "windows-1252"}, "application/xml")
+var cursor = response.TBL.@next default null
+var dtFimFrom = (vars.runState.from default "") as String
+var until = (vars.runState.until default "") as String
+var iniFrom = (vars.runState.iniFrom default "") as String
+var iniUntil = (vars.runState.iniUntil default "") as String
+// Colunas do arquivo = exatamente os elementos do defcol da query, com o valor cru do ARTSOFT.
+var allRows = (response.TBL.*NegociacoesFuturas default []) map (row) -> {
+	ClientAndBranchNumber: trim((row.ClientAndBranchNumber default "") as String),
+	Cli: trim((row.Cli default "") as String),
+	Filial: trim((row.Filial default "") as String),
+	ProductCode: trim((row.ProductCode default "") as String),
+	BeginDate: trim((row.BeginDate default "") as String),
+	EndDate: trim((row.EndDate default "") as String),
+	Value: trim((row.Value default "") as String)
+}
+---
+{
+	readCount: sizeOf(allRows),
+	// dtFimFrom: DtFim >= dtFimFrom. dtFim: DtFim <= dtFim. dtIniFrom/dtIni (opcionais): DtIni no intervalo.
+	// Se o filtro foi informado e a linha não tem a data correspondente, a linha NÃO passa.
+	rows: allRows filter ((r) ->
+		(isEmpty(dtFimFrom) or (!isEmpty(r.EndDate) and r.EndDate >= dtFimFrom))
+		and (isEmpty(until) or (!isEmpty(r.EndDate) and r.EndDate <= until))
+		and (isEmpty(iniFrom) or (!isEmpty(r.BeginDate) and r.BeginDate >= iniFrom))
+		and (isEmpty(iniUntil) or (!isEmpty(r.BeginDate) and r.BeginDate <= iniUntil))
+	),
+	next:
+		if (cursor == null or isBlank(cursor as String))
+			null
+		else
+			cursor as String
+}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+
+		<logger level="INFO" doc:name="Log página consultada"
+			message='#[write({event: "negotiated-prices-export-page-queried", page: vars.runState.page + 1, requestNext: vars.requestedNext, returnedNext: vars.artsoftPage.next, read: vars.artsoftPage.readCount, records: sizeOf(vars.artsoftPage.rows), correlationId: vars.exportCorrelationId}, "application/json", {indent: false}) as String]' />
+
+		<choice doc:name="Validar cursor repetido">
+			<when expression="#[vars.artsoftPage.next != null and (vars.artsoftPage.next == vars.requestedNext or (vars.runState.seenCursors contains vars.artsoftPage.next))]">
+				<raise-error type="NEGOTIATED-EXPORT:CURSOR_LOOP"
+					description="O ARTSOFT devolveu um cursor next repetido." />
+			</when>
+		</choice>
+
+		<choice doc:name="Gravar somente página com dados">
+			<when expression="#[!isEmpty(vars.artsoftPage.rows)]">
+				<ee:transform doc:name="Linhas em CSV">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output text/plain
+---
+write(vars.artsoftPage.rows, "application/csv", {header: (!vars.runState.fileStarted), lineSeparator: "\n", quoteValues: true, escape: "\""})]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+				<choice doc:name="Primeira página ou continuação">
+					<when expression="#[!vars.runState.fileStarted]">
+						<file:write config-ref="NegotiatedPrices_Export_File_Config"
+							path="#[vars.runState.fileName]"
+							mode="OVERWRITE"
+							doc:name="Criar arquivo CSV" />
+					</when>
+					<otherwise>
+						<file:write config-ref="NegotiatedPrices_Export_File_Config"
+							path="#[vars.runState.fileName]"
+							mode="APPEND"
+							doc:name="Acrescentar ao arquivo CSV" />
+					</otherwise>
+				</choice>
+			</when>
+			<otherwise>
+				<logger level="INFO" doc:name="Log página vazia"
+					message='#[write({event: "negotiated-prices-export-page-empty", records: 0, correlationId: vars.exportCorrelationId}, "application/json", {indent: false}) as String]' />
+			</otherwise>
+		</choice>
+
+		<ee:transform doc:name="Avançar estado somente em memória">
+			<ee:variables>
+				<ee:set-variable variableName="runState"><![CDATA[%dw 2.0
+output application/java
+---
+vars.runState ++ {
+	page: vars.runState.page + 1,
+	next: vars.artsoftPage.next,
+	hasMore: vars.artsoftPage.next != null,
+	total: vars.runState.total + sizeOf(vars.artsoftPage.rows),
+	totalRead: vars.runState.totalRead + vars.artsoftPage.readCount,
+	fileStarted: vars.runState.fileStarted or !isEmpty(vars.artsoftPage.rows),
+	seenCursors:
+		if (vars.artsoftPage.next == null)
+			vars.runState.seenCursors
+		else
+			vars.runState.seenCursors ++ [vars.artsoftPage.next],
+	allKeys: vars.runState.allKeys ++ (vars.artsoftPage.rows map ((r) -> r.ClientAndBranchNumber ++ "|" ++ r.ProductCode))
+}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+	</sub-flow>
+</mule>
