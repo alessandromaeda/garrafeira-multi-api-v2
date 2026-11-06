@@ -45,3 +45,4 @@ target/
 .mule/
 .DS_Store
 velocity.log
+postman/*.postman_environment.json

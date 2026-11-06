@@ -1,0 +1,297 @@
+{
+  "info": {
+    "_postman_id": "6d23155c-33f8-4a54-bd50-4f18af54f796",
+    "name": "Salesforce - Account Type Picklist",
+    "description": "Fluxo para obter um token, consultar Account.Type, preservar os valores existentes, adicionar 24 = VALOR ONLINE ao StandardValueSet AccountType e validar o resultado no Record Type Customer. Execute as requisições manualmente e em ordem. A requisição 03 altera metadados do Salesforce.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "01 - Obter access token",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Token obtido com sucesso', function () {",
+              "    pm.response.to.have.status(200);",
+              "    const json = pm.response.json();",
+              "    pm.expect(json.access_token).to.be.a('string').and.not.empty;",
+              "    pm.collectionVariables.set('access_token', json.access_token);",
+              "    if (json.instance_url) pm.collectionVariables.set('base_url', json.instance_url);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/x-www-form-urlencoded"
+          }
+        ],
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {
+              "key": "grant_type",
+              "value": "client_credentials",
+              "type": "text"
+            },
+            {
+              "key": "client_id",
+              "value": "{{client_id}}",
+              "type": "text"
+            },
+            {
+              "key": "client_secret",
+              "value": "{{client_secret}}",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{base_url}}/services/oauth2/token",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "services",
+            "oauth2",
+            "token"
+          ]
+        },
+        "description": "Preencha client_secret nas variáveis da collection antes de enviar. O teste salva access_token e instance_url automaticamente."
+      }
+    },
+    {
+      "name": "02 - Consultar valores atuais do Customer",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Valores atuais consultados', function () {",
+              "    pm.response.to.have.status(200);",
+              "    const json = pm.response.json();",
+              "    pm.expect(json.values).to.be.an('array').and.not.empty;",
+              "    pm.collectionVariables.set('picklist_backup', JSON.stringify(json.values));",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "GET",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/services/data/v{{api_version}}/ui-api/object-info/Account/picklist-values/{{record_type_id}}/Type",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "services",
+            "data",
+            "v{{api_version}}",
+            "ui-api",
+            "object-info",
+            "Account",
+            "picklist-values",
+            "{{record_type_id}}",
+            "Type"
+          ]
+        },
+        "description": "Consulta e guarda em picklist_backup os valores atualmente disponíveis no Record Type Customer. Esta requisição não altera dados."
+      }
+    },
+    {
+      "name": "03 - ADICIONAR 24 - VALOR ONLINE",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (!pm.collectionVariables.get('access_token')) {",
+              "    throw new Error('Execute primeiro 01 - Obter access token.');",
+              "}",
+              "if (!pm.collectionVariables.get('picklist_backup')) {",
+              "    throw new Error('Execute primeiro 02 - Consultar valores atuais do Customer.');",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Metadata API aceitou a atualização', function () {",
+              "    pm.response.to.have.status(200);",
+              "    pm.expect(pm.response.text()).to.include('<success>true</success>');",
+              "    pm.expect(pm.response.text()).to.include('<fullName>AccountType</fullName>');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "text/xml; charset=UTF-8"
+          },
+          {
+            "key": "SOAPAction",
+            "value": "updateMetadata"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<env:Envelope xmlns:env=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:met=\"http://soap.sforce.com/2006/04/metadata\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n  <env:Header>\n    <met:SessionHeader>\n      <met:sessionId>{{access_token}}</met:sessionId>\n    </met:SessionHeader>\n  </env:Header>\n  <env:Body>\n    <met:updateMetadata>\n      <met:metadata xsi:type=\"met:StandardValueSet\">\n        <met:fullName>AccountType</met:fullName>\n        <met:standardValue><met:fullName>1</met:fullName><met:default>false</met:default><met:label>HOTEL</met:label></met:standardValue>\n        <met:standardValue><met:fullName>2</met:fullName><met:default>false</met:default><met:label>RESTAURANTE</met:label></met:standardValue>\n        <met:standardValue><met:fullName>3</met:fullName><met:default>false</met:default><met:label>BARES</met:label></met:standardValue>\n        <met:standardValue><met:fullName>4</met:fullName><met:default>false</met:default><met:label>DISCOTECA</met:label></met:standardValue>\n        <met:standardValue><met:fullName>5</met:fullName><met:default>false</met:default><met:label>GARRAFEIRA</met:label></met:standardValue>\n        <met:standardValue><met:fullName>6</met:fullName><met:default>false</met:default><met:label>CAFE/PASTELARIA</met:label></met:standardValue>\n        <met:standardValue><met:fullName>7</met:fullName><met:default>false</met:default><met:label>SNACK/CASA DE PASTO/TABERNA</met:label></met:standardValue>\n        <met:standardValue><met:fullName>8</met:fullName><met:default>false</met:default><met:label>GELATARIA/CREPARIA</met:label></met:standardValue>\n        <met:standardValue><met:fullName>9</met:fullName><met:default>false</met:default><met:label>SUPER-MERCADO</met:label></met:standardValue>\n        <met:standardValue><met:fullName>10</met:fullName><met:default>false</met:default><met:label>MINI-MERCADO/MERCEARIA</met:label></met:standardValue>\n        <met:standardValue><met:fullName>11</met:fullName><met:default>false</met:default><met:label>EVENTOS/CATERING</met:label></met:standardValue>\n        <met:standardValue><met:fullName>12</met:fullName><met:default>false</met:default><met:label>ENTIDADE PUBLICA</met:label></met:standardValue>\n        <met:standardValue><met:fullName>13</met:fullName><met:default>false</met:default><met:label>CLIENTE CORPORATIVO</met:label></met:standardValue>\n        <met:standardValue><met:fullName>14</met:fullName><met:default>false</met:default><met:label>ARMAZENISTA</met:label></met:standardValue>\n        <met:standardValue><met:fullName>15</met:fullName><met:default>false</met:default><met:label>CLIENTE NACIONAL</met:label></met:standardValue>\n        <met:standardValue><met:fullName>16</met:fullName><met:default>false</met:default><met:label>DISTRIBUIDOR EXCLUSIVO</met:label></met:standardValue>\n        <met:standardValue><met:fullName>17</met:fullName><met:default>false</met:default><met:label>IMPORTADOR U.E.</met:label></met:standardValue>\n        <met:standardValue><met:fullName>18</met:fullName><met:default>false</met:default><met:label>IMPORTADOR O.M.</met:label></met:standardValue>\n        <met:standardValue><met:fullName>19</met:fullName><met:default>false</met:default><met:label>CONSUMIDOR FINAL</met:label></met:standardValue>\n        <met:standardValue><met:fullName>20</met:fullName><met:default>false</met:default><met:label>COLABORADOR</met:label></met:standardValue>\n        <met:standardValue><met:fullName>21</met:fullName><met:default>false</met:default><met:label>FORNECEDOR</met:label></met:standardValue>\n        <met:standardValue><met:fullName>22</met:fullName><met:default>false</met:default><met:label>OUTROS</met:label></met:standardValue>\n        <met:standardValue><met:fullName>23</met:fullName><met:default>false</met:default><met:label>CASH &amp; CARRY</met:label></met:standardValue>\n        <met:standardValue><met:fullName>{{new_value}}</met:fullName><met:default>false</met:default><met:label>{{new_label}}</met:label></met:standardValue>\n        <met:standardValue><met:fullName>90</met:fullName><met:default>false</met:default><met:label>ENTREPOSTO</met:label></met:standardValue>\n        <met:standardValue><met:fullName>99</met:fullName><met:default>false</met:default><met:label>NATAL</met:label></met:standardValue>\n      </met:metadata>\n    </met:updateMetadata>\n  </env:Body>\n</env:Envelope>",
+          "options": {
+            "raw": {
+              "language": "xml"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{base_url}}/services/Soap/m/{{api_version}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "services",
+            "Soap",
+            "m",
+            "{{api_version}}"
+          ]
+        },
+        "description": "ATENÇÃO: esta requisição altera o StandardValueSet AccountType. Ela preserva os 25 valores informados e adiciona new_value=24, new_label=VALOR ONLINE. Não execute se a consulta 02 mostrar uma lista diferente da esperada."
+      }
+    },
+    {
+      "name": "04 - Validar VALOR ONLINE no Customer",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Novo valor disponível no Record Type Customer', function () {",
+              "    pm.response.to.have.status(200);",
+              "    const json = pm.response.json();",
+              "    const found = json.values.find(item => item.value === pm.collectionVariables.get('new_value') && item.label === pm.collectionVariables.get('new_label'));",
+              "    pm.expect(found, 'O valor foi criado globalmente, mas pode não estar habilitado no Record Type Customer').to.exist;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "GET",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/services/data/v{{api_version}}/ui-api/object-info/Account/picklist-values/{{record_type_id}}/Type",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "services",
+            "data",
+            "v{{api_version}}",
+            "ui-api",
+            "object-info",
+            "Account",
+            "picklist-values",
+            "{{record_type_id}}",
+            "Type"
+          ]
+        },
+        "description": "Confirma se 24 = VALOR ONLINE está disponível no Record Type Customer. Se o teste falhar, o valor pode ter sido criado no conjunto global, mas ainda precisa ser associado ao Record Type."
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "https://innovation-flow-32042--gasodev.sandbox.my.salesforce.com",
+      "type": "string"
+    },
+    {
+      "key": "api_version",
+      "value": "67.0",
+      "type": "string"
+    },
+    {
+      "key": "client_id",
+      "value": "3MVG9WWZQEHBhj5Zf7.kte2wSsW9NZylA7iSzatG_7HC_I2e3rzuk86LmgN1flK5na18gDiQIIR9Sp6pE4C5I",
+      "type": "string"
+    },
+    {
+      "key": "client_secret",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "access_token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "record_type_id",
+      "value": "012UC000000vq57YAA",
+      "type": "string"
+    },
+    {
+      "key": "new_value",
+      "value": "24",
+      "type": "string"
+    },
+    {
+      "key": "new_label",
+      "value": "VALOR ONLINE",
+      "type": "string"
+    },
+    {
+      "key": "picklist_backup",
+      "value": "",
+      "type": "string"
+    }
+  ]
+}

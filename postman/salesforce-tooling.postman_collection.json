@@ -1,0 +1,77 @@
+{
+  "info": {
+    "name": "Salesforce Tooling API (gasodev)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Get token (client credentials)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const j = pm.response.json();",
+              "if (j.access_token) { pm.environment.set('access_token', j.access_token); pm.environment.set('instance_url', j.instance_url); }"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {
+              "key": "grant_type",
+              "value": "client_credentials"
+            },
+            {
+              "key": "client_id",
+              "value": "{{consumer_key}}"
+            },
+            {
+              "key": "client_secret",
+              "value": "{{consumer_secret}}"
+            }
+          ]
+        },
+        "url": "{{token_endpoint}}/services/oauth2/token"
+      }
+    },
+    {
+      "name": "2. Tooling query - CustomField",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{instance_url}}/services/data/{{api_version}}/tooling/query/?q=SELECT Id, FullName, Metadata FROM CustomField WHERE TableEnumOrId='{{sf_object}}' AND DeveloperName='{{sf_field}}'",
+          "host": [
+            "{{instance_url}}"
+          ],
+          "path": [
+            "services",
+            "data",
+            "{{api_version}}",
+            "tooling",
+            "query",
+            ""
+          ],
+          "query": [
+            {
+              "key": "q",
+              "value": "SELECT Id, FullName, Metadata FROM CustomField WHERE TableEnumOrId='{{sf_object}}' AND DeveloperName='{{sf_field}}'"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

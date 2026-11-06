@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+	<!--
+		Teste da Tooling API do Salesforce (sandbox gasodev).
+		O access token NÃO deve ser commitado: informe-o em runtime com
+		-Dsalesforce.tooling.accessToken=... (ou no Runtime Manager).
+	-->
+	<global-property name="salesforce.tooling.host"
+		value="innovation-flow-32042--gasodev.sandbox.my.salesforce.com" />
+	<global-property name="salesforce.tooling.apiVersion" value="v67.0" />
+	<global-property name="salesforce.tooling.accessToken" value="CHANGE_ME" />
+
+	<http:request-config name="Salesforce_Tooling_HTTP_Request_config"
+		doc:name="Salesforce Tooling HTTP Request config">
+		<http:request-connection protocol="HTTPS"
+			host="${salesforce.tooling.host}" port="443" />
+	</http:request-config>
+
+	<flow name="salesforce-tooling-custom-field-test-flow">
+		<http:listener config-ref="Clientes_Test_HTTP_Listener_config"
+			path="/internal/salesforce/tooling/custom-field"
+			allowedMethods="GET"
+			doc:name="GET teste Tooling API CustomField">
+			<http:response statusCode="#[vars.httpStatus default 200]" />
+			<http:error-response statusCode="#[vars.httpStatus default 500]">
+				<http:body>#[payload]</http:body>
+			</http:error-response>
+		</http:listener>
+		<!-- Padrão: Account.Type; sobrescreva com ?object=...&field=... -->
+		<set-variable variableName="sfObject"
+			value="#[attributes.queryParams.object default 'Account']"
+			doc:name="Objeto" />
+		<set-variable variableName="sfField"
+			value="#[attributes.queryParams.field default 'Type']"
+			doc:name="Campo" />
+		<set-variable variableName="soql"
+			value="#['SELECT Id, FullName, Metadata FROM CustomField WHERE TableEnumOrId = \'$(vars.sfObject)\' AND DeveloperName = \'$(vars.sfField)\'']"
+			doc:name="Montar SOQL" />
+		<logger level="INFO" category="salesforce.tooling"
+			message="#['Tooling query: ' ++ vars.soql]" />
+		<http:request method="GET"
+			config-ref="Salesforce_Tooling_HTTP_Request_config"
+			path="#['/services/data/' ++ p('salesforce.tooling.apiVersion') ++ '/tooling/query/']"
+			doc:name="GET /tooling/query">
+			<http:headers><![CDATA[#[{
+	"Authorization": "Bearer " ++ p('salesforce.tooling.accessToken'),
+	"Accept": "application/json"
+}]]]></http:headers>
+			<http:query-params><![CDATA[#[{ q: vars.soql }]]]></http:query-params>
+		</http:request>
+		<ee:transform doc:name="Resposta">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+payload]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<error-handler>
+			<on-error-propagate type="HTTP:CLIENT_SECURITY, HTTP:UNAUTHORIZED"
+				logException="false">
+				<set-variable variableName="httpStatus" value="401" />
+				<ee:transform doc:name="Token inválido ou expirado">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	message: "Access token do Salesforce inválido ou expirado. Defina salesforce.tooling.accessToken.",
+	detail: error.description
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-propagate>
+			<on-error-propagate type="ANY" logException="true">
+				<set-variable variableName="httpStatus" value="500" />
+				<ee:transform doc:name="Falha na consulta Tooling">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	message: "Falha ao consultar a Tooling API.",
+	detail: error.description
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-propagate>
+		</error-handler>
+	</flow>
+</mule>

@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+	<!--
+		GET /test/clientes/tipos
+		Somente leitura. Percorre os clientes (TerFch) e devolve os pares distintos
+		TerFch.Cli.CodTipo / TerFch.Cli.Tipo encontrados, para comparar com o
+		picklist AccountType do Salesforce. Só aparecem tipos que já têm cliente.
+		?maxPages=N limita o número de páginas lidas (padrão 50).
+	-->
+	<flow name="garrafeira-clientes-test-types-flow">
+		<http:listener config-ref="Clientes_Test_HTTP_Listener_config" path="/test/clientes/tipos" allowedMethods="GET" doc:name="GET tipos de cliente distintos">
+			<http:response statusCode="#[vars.httpStatus default 200]">
+				<http:headers><![CDATA[#[{'Content-Type': 'application/json; charset=UTF-8'}]]]></http:headers>
+			</http:response>
+		</http:listener>
+		<set-variable variableName="maxPages" value="#[(attributes.queryParams.maxPages default '50') as Number]" doc:name="Ler limite de páginas" />
+		<ee:transform doc:name="Inicializar estado">
+			<ee:variables>
+				<ee:set-variable variableName="typesState"><![CDATA[%dw 2.0
+output application/java
+---
+{
+	page: 0,
+	next: null,
+	hasMore: true,
+	records: 0,
+	seenCursors: [],
+	types: {}
+}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<foreach collection="#[1 to vars.maxPages]" doc:name="Paginar clientes">
+			<choice doc:name="Ainda existe página?">
+				<when expression="#[vars.typesState.hasMore]">
+					<flow-ref name="garrafeira-clientes-test-types-page-subflow" doc:name="Ler página" />
+				</when>
+			</choice>
+		</foreach>
+		<ee:transform doc:name="Responder tipos distintos">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	complete: !vars.typesState.hasMore,
+	pages: vars.typesState.page,
+	records: vars.typesState.records,
+	types: vars.typesState.types pluck ((value, key) -> { code: key as String, name: value }) orderBy ((item) -> item.code as Number default 0)
+}]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<error-handler>
+			<on-error-continue type="ANY" logException="true">
+				<set-variable variableName="httpStatus" value="502" />
+				<ee:transform doc:name="Resposta de falha">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	success: false,
+	pages: vars.typesState.page default 0,
+	message: error.description default "Falha ao consultar os tipos de cliente no ARTSOFT."
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-continue>
+		</error-handler>
+	</flow>
+
+	<sub-flow name="garrafeira-clientes-test-types-page-subflow">
+		<set-variable variableName="nextValue" value="#[(vars.typesState.next default '') as String]" doc:name="Guardar cursor solicitado" />
+		<ee:transform doc:name="Criar consulta de tipos">
+			<ee:variables>
+				<ee:set-variable resource="clientes/Queries_Query_Client_Types.dwl" variableName="clientTypesQueryXml" />
+			</ee:variables>
+		</ee:transform>
+		<flow-ref name="garrafeira-testes-login-and-generate-digest" doc:name="Login e digest" />
+		<http:request method="POST" config-ref="HTTP_Request_configuration" path="/Queries/Query" outputMimeType="application/octet-stream" requestStreamingMode="NEVER" doc:name="Consultar página de clientes">
+			<repeatable-in-memory-stream />
+			<http:body><![CDATA[#[vars.clientTypesQueryXml]]]></http:body>
+			<http:headers><![CDATA[#[{
+	digest: vars.digest,
+	'Content-Type': 'application/xml'
+}]]]></http:headers>
+		</http:request>
+		<ee:transform doc:name="Interpretar página">
+			<ee:variables>
+				<ee:set-variable variableName="typesPage"><![CDATA[%dw 2.0
+output application/java
+var response = read(payload as String {encoding: "windows-1252"}, "application/xml")
+var cursor = response.TBL.@next default null
+---
+{
+	rows: (response.TBL.*CLI default []) map ((row) -> {
+		code: trim((row.TypeCode default "") as String),
+		name: trim((row.TypeName default "") as String)
+	}),
+	next:
+		if (cursor == null or isBlank(cursor as String))
+			null
+		else
+			cursor as String
+}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<choice doc:name="Validar cursor">
+			<when expression="#[vars.typesPage.next != null and (vars.typesPage.next == vars.nextValue or (vars.typesState.seenCursors contains vars.typesPage.next))]">
+				<raise-error type="CLIENTES:TYPES_CURSOR_LOOP" description="O ARTSOFT devolveu um cursor next repetido." />
+			</when>
+		</choice>
+		<ee:transform doc:name="Acumular tipos distintos">
+			<ee:variables>
+				<ee:set-variable variableName="typesState"><![CDATA[%dw 2.0
+output application/java
+---
+vars.typesState ++ {
+	page: vars.typesState.page + 1,
+	next: vars.typesPage.next,
+	hasMore: vars.typesPage.next != null,
+	records: vars.typesState.records + sizeOf(vars.typesPage.rows),
+	seenCursors:
+		if (vars.typesPage.next == null)
+			vars.typesState.seenCursors
+		else
+			vars.typesState.seenCursors ++ [vars.typesPage.next],
+	types: vars.typesState.types ++ (
+		vars.typesPage.rows
+			filter ((r) -> !isEmpty(r.code))
+			reduce ((r, acc = {}) -> acc ++ { (r.code): r.name })
+	)
+}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+	</sub-flow>
+</mule>

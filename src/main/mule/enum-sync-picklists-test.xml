@@ -1,0 +1,524 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+	<!--
+		MOCK DE TESTE - sincronização de listas de valores (picklists) ArtSoft -> Salesforce.
+		Fonte de verdade: ArtSoft (CfgTables). Destino: Metadata API do sandbox Salesforce.
+		Os mapeamentos ficam em enumsync/mappings.dwl (um item por enum).
+		Usa as credenciais OAuth (client credentials) já configuradas em
+		properties/products-sf-secure.yaml e o login/digest do garrafeira-testes.xml.
+
+		POST /test/enum-sync
+			?mapping=tipo|zona   (opcional; padrão: todos os habilitados)
+			&apply=true|false    (padrão false = somente leitura/simulação)
+			&max=2               (máximo de valores NOVOS gravados por execução; padrão 2)
+			&injectTest=true     (acrescenta 2 valores de teste, 9901 e 9902, à lista do ArtSoft)
+			&action=sync|revert|replace
+			                     (replace = CARGA DE EQUALIZACAO: a lista do Salesforce passa a ser exatamente a do
+			                      ArtSoft; so grava com apply=true E confirm=yes. keepCodes=24,90 preserva esses
+			                      codigos que existem so no Salesforce. O limite max nao se aplica ao replace.)
+			                     (revert remove do Salesforce SOMENTE os codigos indicados em codes;
+			                      sem codes, remove apenas os valores de teste 9901 e 9902)
+			&codes=312,405       (usado com action=revert: codigos a remover; exige apply=true para gravar)
+		GET  /test/enum-sync/artsoft-raw?mapping=zona
+			Devolve a resposta bruta do CfgTables (para conferir o formato).
+	-->
+	<global-property name="enumSync.sf.metadataApiVersion" value="67.0" />
+
+	<flow name="enum-sync-picklists-test-flow">
+		<http:listener config-ref="Clientes_Test_HTTP_Listener_config"
+			path="/test/enum-sync" allowedMethods="POST"
+			doc:name="POST sincronizar listas (teste)">
+			<http:response statusCode="#[vars.httpStatus default 200]">
+				<http:headers><![CDATA[#[{'Content-Type': 'application/json; charset=UTF-8'}]]]></http:headers>
+			</http:response>
+		</http:listener>
+		<ee:transform doc:name="Ler parâmetros e mapeamentos">
+			<ee:variables>
+				<ee:set-variable variableName="allMappings" resource="enumsync/mappings.dwl" />
+				<ee:set-variable variableName="apply"><![CDATA[%dw 2.0
+output application/java
+---
+(attributes.queryParams.apply default "false") == "true"]]></ee:set-variable>
+				<ee:set-variable variableName="injectTest"><![CDATA[%dw 2.0
+output application/java
+---
+(attributes.queryParams.injectTest default "false") == "true"]]></ee:set-variable>
+				<ee:set-variable variableName="action"><![CDATA[%dw 2.0
+output application/java
+---
+attributes.queryParams.action default "sync"]]></ee:set-variable>
+				<ee:set-variable variableName="keepCodes"><![CDATA[%dw 2.0
+output application/java
+---
+if (isEmpty(trim(attributes.queryParams.keepCodes default ""))) []
+else ((attributes.queryParams.keepCodes splitBy ",") map ((c) -> trim(c)))]]></ee:set-variable>
+				<ee:set-variable variableName="confirm"><![CDATA[%dw 2.0
+output application/java
+---
+attributes.queryParams.confirm default ""]]></ee:set-variable>
+				<ee:set-variable variableName="maxNew"><![CDATA[%dw 2.0
+output application/java
+---
+(attributes.queryParams.max default "2") as Number]]></ee:set-variable>
+				<ee:set-variable variableName="revertCodes"><![CDATA[%dw 2.0
+output application/java
+---
+if (isEmpty(trim(attributes.queryParams.codes default ""))) ["9901", "9902"]
+else ((attributes.queryParams.codes splitBy ",") map ((c) -> trim(c)))]]></ee:set-variable>
+				<ee:set-variable variableName="mappingFilter"><![CDATA[%dw 2.0
+output application/java
+---
+attributes.queryParams.mapping default ""]]></ee:set-variable>
+				<ee:set-variable variableName="results"><![CDATA[%dw 2.0
+output application/java
+---
+[]]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<ee:transform doc:name="Selecionar mapeamentos ativos">
+			<ee:variables>
+				<ee:set-variable variableName="selectedMappings"><![CDATA[%dw 2.0
+output application/java
+---
+vars.allMappings filter ((m) -> m.enabled and (isEmpty(vars.mappingFilter) or m.id == vars.mappingFilter))]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<choice doc:name="Há mapeamento a processar?">
+			<when expression="#[isEmpty(vars.selectedMappings)]">
+				<raise-error type="ENUMSYNC:UNKNOWN_MAPPING" description="Nenhum mapeamento habilitado corresponde ao parametro mapping." />
+			</when>
+		</choice>
+		<choice doc:name="Acao valida?">
+			<when expression="#[!(['sync', 'revert', 'replace'] contains vars.action)]">
+				<raise-error type="ENUMSYNC:INVALID_CODES" description="action deve ser sync, revert ou replace." />
+			</when>
+			<when expression="#[sizeOf(vars.keepCodes filter ((c) -> !(c matches /^[0-9]{1,6}$/))) > 0]">
+				<raise-error type="ENUMSYNC:INVALID_CODES" description="Em keepCodes use apenas numeros separados por virgula, por exemplo keepCodes=24,90." />
+			</when>
+			<when expression="#[vars.action == 'replace' and vars.apply and vars.confirm != 'yes']">
+				<raise-error type="ENUMSYNC:INVALID_CODES" description="A carga replace substitui a lista inteira. Para gravar use apply=true e confirm=yes; sem apply=true ela so simula." />
+			</when>
+		</choice>
+		<choice doc:name="Codigos do revert validos?">
+			<when expression="#[vars.action == 'revert' and sizeOf(vars.revertCodes filter ((c) -> !(c matches /^[0-9]{1,6}$/))) > 0]">
+				<raise-error type="ENUMSYNC:INVALID_CODES" description="Em codes use apenas numeros separados por virgula, por exemplo codes=312,405." />
+			</when>
+		</choice>
+		<flow-ref name="enum-sync-get-sf-token-subflow" doc:name="Obter token do Salesforce" />
+		<foreach collection="#[vars.selectedMappings]" doc:name="Um mapeamento por vez">
+			<flow-ref name="enum-sync-process-mapping-subflow" doc:name="Processar mapeamento" />
+		</foreach>
+		<ee:transform doc:name="Resumo">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+var failed = sizeOf(vars.results filter ((r) -> r.status == "FAILED"))
+---
+{
+	mode: if (vars.apply) "APPLY" else "DRY_RUN",
+	action: vars.action,
+	status: if (failed == 0) "OK" else if (failed == sizeOf(vars.results)) "FAILED" else "PARTIAL",
+	results: vars.results
+}]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<error-handler>
+			<on-error-continue type="ENUMSYNC:UNKNOWN_MAPPING, ENUMSYNC:INVALID_CODES" logException="false">
+				<set-variable variableName="httpStatus" value="400" />
+				<ee:transform doc:name="Resposta de parametro invalido">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{ status: "FAILED", message: error.description }]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-continue>
+			<on-error-continue type="ANY" logException="true">
+				<set-variable variableName="httpStatus" value="502" />
+				<ee:transform doc:name="Resposta de falha geral">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{ status: "FAILED", scope: "GENERAL", message: error.description default "Falha geral na sincronização." }]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-continue>
+		</error-handler>
+	</flow>
+
+	<!-- Um mapeamento: erros ficam isolados aqui e não afetam os demais. -->
+	<sub-flow name="enum-sync-process-mapping-subflow">
+		<set-variable variableName="mapping" value="#[payload]" doc:name="Mapeamento corrente" />
+		<set-variable variableName="desired" value="#[[]]" doc:name="Limpar lista do ArtSoft" />
+		<set-variable variableName="plan" value="#[{ toAdd: [], pending: [], toRemove: [], changes: 0, finalValues: [], finalCodes: [] }]" doc:name="Limpar plano" />
+		<set-variable variableName="sfRead" value="#[{ values: [] }]" doc:name="Limpar leitura do SF" />
+		<set-variable variableName="outcome" value="#[{ status: 'FAILED' }]" doc:name="Resultado inicial" />
+		<try doc:name="Isolar falhas do mapeamento">
+			<flow-ref name="enum-sync-read-artsoft-subflow" doc:name="Ler lista no ArtSoft" />
+			<choice doc:name="Lista do ArtSoft vazia?">
+				<when expression="#[sizeOf(vars.desired) == 0 and vars.action != 'revert']">
+					<raise-error type="ENUMSYNC:EMPTY_ARTSOFT_LIST" description="O ArtSoft devolveu uma lista vazia; nada sera gravado." />
+				</when>
+			</choice>
+			<flow-ref name="enum-sync-read-sf-subflow" doc:name="Ler lista no Salesforce" />
+			<choice doc:name="Lista global não suportada?">
+				<when expression="#[vars.sfRead.global]">
+					<raise-error type="ENUMSYNC:GLOBAL_VALUE_SET" description="#['O campo usa a lista global ' ++ (vars.sfRead.globalName default '') ++ '; use kind GlobalValueSet no mapeamento.']" />
+				</when>
+			</choice>
+			<ee:transform doc:name="Comparar ArtSoft x Salesforce">
+				<ee:variables>
+					<ee:set-variable variableName="plan" resource="enumsync/plan.dwl" />
+				</ee:variables>
+			</ee:transform>
+			<choice doc:name="Há alteração?">
+				<when expression="#[vars.plan.changes == 0]">
+					<set-variable variableName="outcome" value="#[{ status: 'NO_CHANGES' }]" doc:name="Sem diferenças" />
+				</when>
+				<when expression="#[!vars.apply]">
+					<set-variable variableName="outcome" value="#[{ status: 'DRY_RUN' }]" doc:name="Simulação" />
+				</when>
+				<otherwise>
+					<flow-ref name="enum-sync-write-sf-subflow" doc:name="Gravar no Salesforce" />
+					<flow-ref name="enum-sync-read-sf-subflow" doc:name="Reler para conferir" />
+					<set-variable variableName="outcome" doc:name="Aplicado e conferido"
+						value="#[{ status: 'APPLIED', added: vars.plan.toAdd, removed: vars.plan.toRemove, verified: sizeOf(vars.plan.finalCodes filter ((c) -> !((vars.sfRead.values map ((v) -> v.fullName)) contains c))) == 0 }]" />
+				</otherwise>
+			</choice>
+			<error-handler>
+				<on-error-continue type="ANY" logException="true">
+					<set-variable variableName="outcome" value="#[{ status: 'FAILED', error: (error.description default 'erro') }]" doc:name="Falha isolada" />
+				</on-error-continue>
+			</error-handler>
+		</try>
+		<ee:transform doc:name="Registrar resultado do mapeamento">
+			<ee:variables>
+				<ee:set-variable variableName="results"><![CDATA[%dw 2.0
+output application/java
+---
+vars.results ++ [{
+	mapping: vars.mapping.id,
+	label: vars.mapping.label,
+	status: vars.outcome.status,
+	artsoftCount: sizeOf(vars.desired),
+	salesforceCount: sizeOf(vars.sfRead.values default []),
+	toAdd: vars.plan.toAdd,
+	pending: vars.plan.pending,
+	toRelabel: vars.plan.toRelabel,
+	toRemove: vars.plan.toRemove,
+	kept: vars.plan.kept,
+	inactiveInSalesforce: vars.plan.inactiveInSalesforce,
+	added: vars.outcome.added,
+	removed: vars.outcome.removed,
+	verified: vars.outcome.verified,
+	error: vars.outcome.error
+}]]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+	</sub-flow>
+
+	<sub-flow name="enum-sync-get-sf-token-subflow">
+		<http:request method="POST" url="${salesforce.dataCloud.tokenEndpoint}/services/oauth2/token"
+			doc:name="Token OAuth (client credentials)">
+			<http:body><![CDATA[#[output application/x-www-form-urlencoded
+---
+{
+	grant_type: "client_credentials",
+	client_id: p("salesforce.dataCloud.consumerKey"),
+	client_secret: p("salesforce.dataCloud.consumerSecret")
+}]]]></http:body>
+			<http:headers><![CDATA[#[{
+	Accept: 'application/json',
+	'Accept-Encoding': 'identity'
+}]]]></http:headers>
+			<http:response-validator>
+				<http:success-status-code-validator values="0..599" />
+			</http:response-validator>
+		</http:request>
+		<set-variable variableName="sfAuthMeta" doc:name="Guardar status e cabeçalhos do token"
+			value="#[{ status: attributes.statusCode, contentType: (attributes.headers['content-type'] default ''), contentEncoding: (attributes.headers['content-encoding'] default '') }]" />
+		<ee:transform doc:name="Guardar token e instância">
+			<ee:variables>
+				<ee:set-variable variableName="sfToken"><![CDATA[%dw 2.0
+output application/java
+---
+(payload.access_token) default ""]]></ee:set-variable>
+				<ee:set-variable variableName="sfInstance"><![CDATA[%dw 2.0
+output application/java
+---
+(payload.instance_url) default ""]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<choice doc:name="Token obtido?">
+			<when expression="#[isEmpty(vars.sfToken)]">
+				<raise-error type="ENUMSYNC:SF_AUTH_FAILED" description="#['Nao foi possivel obter o token do Salesforce. HTTP ' ++ (vars.sfAuthMeta.status as String) ++ ', content-type=' ++ vars.sfAuthMeta.contentType ++ ', content-encoding=' ++ vars.sfAuthMeta.contentEncoding]" />
+			</when>
+		</choice>
+	</sub-flow>
+
+	<sub-flow name="enum-sync-read-artsoft-subflow">
+		<ee:transform doc:name="Montar body do CfgTables">
+			<ee:variables>
+				<ee:set-variable variableName="artsoftBody"><![CDATA[%dw 2.0
+output application/xml writeDeclaration = false
+---
+root @(table: vars.mapping.artsoft.table, (vars.mapping.artsoft.attrs default {})): {}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<flow-ref name="garrafeira-testes-login-and-generate-digest" doc:name="Login e digest" />
+		<http:request method="POST" config-ref="HTTP_Request_configuration" path="/ArtDB/CfgTables"
+			outputMimeType="application/octet-stream" requestStreamingMode="NEVER" doc:name="POST /ArtDB/CfgTables">
+			<repeatable-in-memory-stream />
+			<http:body><![CDATA[#[vars.artsoftBody]]]></http:body>
+			<http:headers><![CDATA[#[{
+	digest: vars.digest,
+	'Content-Type': 'application/xml'
+}]]]></http:headers>
+		</http:request>
+		<ee:transform doc:name="Extrair pares código/nome">
+			<ee:variables>
+				<ee:set-variable variableName="desired" resource="enumsync/parse-artsoft-list.dwl" />
+			</ee:variables>
+		</ee:transform>
+	</sub-flow>
+
+	<sub-flow name="enum-sync-read-sf-subflow">
+		<ee:transform doc:name="Montar readMetadata">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output text/plain
+---
+"<env:Envelope xmlns:env=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:met=\"http://soap.sforce.com/2006/04/metadata\"><env:Header><met:SessionHeader><met:sessionId>" ++ vars.sfToken ++ "</met:sessionId></met:SessionHeader></env:Header><env:Body><met:readMetadata><met:type>" ++ vars.mapping.salesforce.kind ++ "</met:type><met:fullNames>" ++ vars.mapping.salesforce.fullName ++ "</met:fullNames></met:readMetadata></env:Body></env:Envelope>"]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<http:request method="POST" url="#[vars.sfInstance ++ '/services/Soap/m/' ++ p('enumSync.sf.metadataApiVersion')]"
+			outputMimeType="application/octet-stream" doc:name="SOAP readMetadata">
+			<http:headers><![CDATA[#[{
+	'Content-Type': 'text/xml; charset=UTF-8',
+	SOAPAction: 'readMetadata'
+}]]]></http:headers>
+			<http:response-validator>
+				<http:success-status-code-validator values="0..599" />
+			</http:response-validator>
+		</http:request>
+		<ee:transform doc:name="Interpretar lista do Salesforce">
+			<ee:variables>
+				<ee:set-variable variableName="sfRead" resource="enumsync/parse-sf-record.dwl" />
+			</ee:variables>
+		</ee:transform>
+		<choice doc:name="Erro ou campo não encontrado?">
+			<when expression="#[vars.sfRead.fault != null]">
+				<raise-error type="ENUMSYNC:SF_READ_FAILED" description="#[vars.sfRead.fault]" />
+			</when>
+			<when expression="#[!vars.sfRead.found]">
+				<raise-error type="ENUMSYNC:SF_FIELD_NOT_FOUND" description="#['Metadado nao encontrado no Salesforce: ' ++ vars.mapping.salesforce.fullName]" />
+			</when>
+		</choice>
+	</sub-flow>
+
+	<sub-flow name="enum-sync-write-sf-subflow">
+		<ee:transform doc:name="Montar updateMetadata">
+			<ee:message>
+				<ee:set-payload resource="enumsync/build-update-metadata.dwl" />
+			</ee:message>
+		</ee:transform>
+		<http:request method="POST" url="#[vars.sfInstance ++ '/services/Soap/m/' ++ p('enumSync.sf.metadataApiVersion')]"
+			outputMimeType="application/octet-stream" doc:name="SOAP updateMetadata">
+			<http:headers><![CDATA[#[{
+	'Content-Type': 'text/xml; charset=UTF-8',
+	SOAPAction: 'updateMetadata'
+}]]]></http:headers>
+			<http:response-validator>
+				<http:success-status-code-validator values="0..599" />
+			</http:response-validator>
+		</http:request>
+		<ee:transform doc:name="Interpretar resposta do update">
+			<ee:variables>
+				<ee:set-variable variableName="updateResult"><![CDATA[%dw 2.0
+output application/java
+var doc = read(payload as String {encoding: "UTF-8"}, "application/xml")
+var body = doc.Envelope.Body
+var result = body.updateMetadataResponse.result
+---
+{
+	success: (result.success default "false") == "true",
+	message: if (body.Fault != null) (body.Fault.faultstring as String)
+		else ((result.errors.message default "") as String)
+}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<choice doc:name="Gravação aceita?">
+			<when expression="#[!vars.updateResult.success]">
+				<raise-error type="ENUMSYNC:SF_UPDATE_FAILED" description="#[vars.updateResult.message]" />
+			</when>
+		</choice>
+	</sub-flow>
+
+	<flow name="enum-sync-artsoft-raw-flow">
+		<http:listener config-ref="Clientes_Test_HTTP_Listener_config"
+			path="/test/enum-sync/artsoft-raw" allowedMethods="GET"
+			doc:name="GET resposta bruta do CfgTables">
+			<http:response statusCode="#[vars.httpStatus default 200]">
+				<http:headers><![CDATA[#[{'Content-Type': 'application/xml; charset=UTF-8'}]]]></http:headers>
+			</http:response>
+		</http:listener>
+		<ee:transform doc:name="Carregar mapeamentos">
+			<ee:variables>
+				<ee:set-variable variableName="allMappings" resource="enumsync/mappings.dwl" />
+			</ee:variables>
+		</ee:transform>
+		<ee:transform doc:name="Selecionar mapeamento">
+			<ee:variables>
+				<ee:set-variable variableName="mapping"><![CDATA[%dw 2.0
+output application/java
+---
+(vars.allMappings filter ((m) -> m.id == (attributes.queryParams.mapping default "")))[0]]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<choice doc:name="Mapeamento válido?">
+			<when expression="#[vars.mapping == null]">
+				<raise-error type="ENUMSYNC:UNKNOWN_MAPPING" description="Informe ?mapping=tipo ou ?mapping=zona." />
+			</when>
+		</choice>
+		<flow-ref name="enum-sync-read-artsoft-raw-subflow" doc:name="Consultar CfgTables" />
+		<error-handler>
+			<on-error-continue type="ANY" logException="true">
+				<set-variable variableName="httpStatus" value="502" />
+				<ee:transform doc:name="Resposta de falha">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/xml
+---
+error: error.description default "Falha ao consultar o CfgTables."]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-continue>
+		</error-handler>
+	</flow>
+
+	<sub-flow name="enum-sync-read-artsoft-raw-subflow">
+		<ee:transform doc:name="Montar body do CfgTables">
+			<ee:variables>
+				<ee:set-variable variableName="artsoftBody"><![CDATA[%dw 2.0
+output application/xml writeDeclaration = false
+---
+root @(table: vars.mapping.artsoft.table, (vars.mapping.artsoft.attrs default {})): {}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<flow-ref name="garrafeira-testes-login-and-generate-digest" doc:name="Login e digest" />
+		<http:request method="POST" config-ref="HTTP_Request_configuration" path="/ArtDB/CfgTables"
+			outputMimeType="application/octet-stream" requestStreamingMode="NEVER" doc:name="POST /ArtDB/CfgTables">
+			<repeatable-in-memory-stream />
+			<http:body><![CDATA[#[vars.artsoftBody]]]></http:body>
+			<http:headers><![CDATA[#[{
+	digest: vars.digest,
+	'Content-Type': 'application/xml'
+}]]]></http:headers>
+		</http:request>
+		<ee:transform doc:name="Converter resposta ARTSOFT">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/xml
+---
+read(payload as String {encoding: (vars.mapping.artsoft.encoding default "windows-1252")}, "application/xml")]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+	</sub-flow>
+
+	<!--
+		GET /test/enum-sync/salesforce-raw?mapping=tipo|zona
+			Somente leitura. Devolve a resposta bruta do readMetadata do Salesforce
+			para o metadado configurado no mapeamento.
+		Parametros opcionais para olhar outro metadado:
+			&kind=GlobalValueSet&fullName=GASO_LogisticsGeoZone
+	-->
+	<flow name="enum-sync-salesforce-raw-flow">
+		<http:listener config-ref="Clientes_Test_HTTP_Listener_config"
+			path="/test/enum-sync/salesforce-raw" allowedMethods="GET"
+			doc:name="GET resposta bruta do readMetadata">
+			<http:response statusCode="#[vars.httpStatus default 200]">
+				<http:headers><![CDATA[#[{'Content-Type': 'application/xml; charset=UTF-8'}]]]></http:headers>
+			</http:response>
+		</http:listener>
+		<ee:transform doc:name="Carregar mapeamentos">
+			<ee:variables>
+				<ee:set-variable variableName="allMappings" resource="enumsync/mappings.dwl" />
+			</ee:variables>
+		</ee:transform>
+		<ee:transform doc:name="Definir metadado a ler">
+			<ee:variables>
+				<ee:set-variable variableName="mapping"><![CDATA[%dw 2.0
+output application/java
+---
+(vars.allMappings filter ((m) -> m.id == (attributes.queryParams.mapping default "")))[0]]]></ee:set-variable>
+				<ee:set-variable variableName="rawKind"><![CDATA[%dw 2.0
+output application/java
+var m = (vars.allMappings filter ((m) -> m.id == (attributes.queryParams.mapping default "")))[0]
+---
+attributes.queryParams.kind default (m.salesforce.kind default "")]]></ee:set-variable>
+				<ee:set-variable variableName="rawFullName"><![CDATA[%dw 2.0
+output application/java
+var m = (vars.allMappings filter ((m) -> m.id == (attributes.queryParams.mapping default "")))[0]
+---
+attributes.queryParams.fullName default (m.salesforce.fullName default "")]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<choice doc:name="Metadado definido?">
+			<when expression="#[isEmpty(vars.rawKind) or isEmpty(vars.rawFullName)]">
+				<raise-error type="ENUMSYNC:UNKNOWN_MAPPING" description="Informe ?mapping=tipo ou ?mapping=zona (ou kind e fullName)." />
+			</when>
+		</choice>
+		<flow-ref name="enum-sync-get-sf-token-subflow" doc:name="Obter token do Salesforce" />
+		<ee:transform doc:name="Montar readMetadata">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output text/plain
+---
+"<env:Envelope xmlns:env=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:met=\"http://soap.sforce.com/2006/04/metadata\"><env:Header><met:SessionHeader><met:sessionId>" ++ vars.sfToken ++ "</met:sessionId></met:SessionHeader></env:Header><env:Body><met:readMetadata><met:type>" ++ vars.rawKind ++ "</met:type><met:fullNames>" ++ vars.rawFullName ++ "</met:fullNames></met:readMetadata></env:Body></env:Envelope>"]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<http:request method="POST" url="#[vars.sfInstance ++ '/services/Soap/m/' ++ p('enumSync.sf.metadataApiVersion')]"
+			outputMimeType="application/octet-stream" doc:name="SOAP readMetadata (bruto)">
+			<http:headers><![CDATA[#[{
+	'Content-Type': 'text/xml; charset=UTF-8',
+	SOAPAction: 'readMetadata'
+}]]]></http:headers>
+			<http:response-validator>
+				<http:success-status-code-validator values="0..599" />
+			</http:response-validator>
+		</http:request>
+		<ee:transform doc:name="Converter resposta do Salesforce">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/xml
+---
+read(payload as String {encoding: "UTF-8"}, "application/xml")]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<error-handler>
+			<on-error-continue type="ANY" logException="true">
+				<set-variable variableName="httpStatus" value="502" />
+				<ee:transform doc:name="Resposta de falha">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/xml
+---
+error: error.description default "Falha ao consultar o Salesforce."]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</on-error-continue>
+		</error-handler>
+	</flow>
+</mule>
