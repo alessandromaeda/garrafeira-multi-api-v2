@@ -71,6 +71,12 @@
 		</dependency>
 		<dependency>
 			<groupId>com.mulesoft.connectors</groupId>
+			<artifactId>mule-salesforce-connector</artifactId>
+			<version>11.5.0</version>
+			<classifier>mule-plugin</classifier>
+		</dependency>
+		<dependency>
+			<groupId>com.mulesoft.connectors</groupId>
 			<artifactId>mule4-sdc-connector</artifactId>
 			<version>1.4.0</version>
 			<classifier>mule-plugin</classifier>

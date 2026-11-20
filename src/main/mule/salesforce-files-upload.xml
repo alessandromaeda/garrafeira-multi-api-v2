@@ -1,0 +1,281 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:file="http://www.mulesoft.org/schema/mule/file"
+	xmlns:salesforce="http://www.mulesoft.org/schema/mule/salesforce"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/file http://www.mulesoft.org/schema/mule/file/current/mule-file.xsd
+http://www.mulesoft.org/schema/mule/salesforce http://www.mulesoft.org/schema/mule/salesforce/current/mule-salesforce.xsd">
+
+	<!--
+		Envia um PDF de uma pasta local para o Salesforce (sandbox gasodev) como
+		ficheiro (ContentVersion) ligado ao Product2 correspondente.
+
+		POST http://127.0.0.1:8082/internal/salesforce/files/upload?fileName=Teste%20Mule.pdf&productCode=09.021
+
+		Regra de ligação: o parâmetro productCode (opcional) indica o Product2.
+		Sem ele, o nome do ficheiro sem a extensão é o ProductCode
+		(ex.: 09.021.pdf -> ProductCode 09.021). O título do ficheiro no
+		Salesforce é sempre o nome sem a extensão (ex.: Teste Mule).
+		Pasta de entrada: ${user.home}/sf-files/entrada
+
+		Comportamento:
+		 - 1.º envio: cria o ficheiro já ligado ao produto (FirstPublishLocationId)
+			   e com SharingOption=A. SharingPrivacy=P foi retirado (TESTE): com P,
+			   outros utilizadores internos não viam o ficheiro no produto.
+			   PublishStatus não é gravável na criação (INVALID_FIELD_FOR_INSERT_UPDATE);
+			   o Salesforce já o define como P por omissão.
+		 - Reenvio do mesmo nome para o mesmo produto: cria NOVA VERSÃO do mesmo
+		   ficheiro (ContentDocumentId), sem duplicar. O Salesforce não permite
+		   apagar versões via API, por isso evitamos criar ficheiros repetidos.
+
+		Credenciais (TESTE): reutiliza temporariamente as do Data Cloud em
+		properties/products-sf-secure.yaml (mesma sandbox gasodev). Se a app não
+		tiver o scope "api", usar uma app própria e voltar para
+		salesforce.crm.* em properties/salesforce-files.yaml. Não commitar segredos.
+	-->
+	<configuration-properties file="properties/salesforce-files.yaml" />
+
+	<file:config name="Salesforce_Files_Input_File_Config"
+		doc:name="Salesforce Files Input File Config">
+		<file:connection workingDir="${user.home}/sf-files/entrada" />
+	</file:config>
+
+	<salesforce:sfdc-config name="Salesforce_Files_Config"
+		doc:name="Salesforce Files Config">
+		<salesforce:oauth-client-credentials-connection>
+			<salesforce:oauth-client-credentials
+				clientId="${salesforce.dataCloud.consumerKey}"
+				clientSecret="${salesforce.dataCloud.consumerSecret}"
+				tokenUrl="${salesforce.dataCloud.tokenEndpoint}/services/oauth2/token" />
+		</salesforce:oauth-client-credentials-connection>
+	</salesforce:sfdc-config>
+
+	<flow name="salesforce-files-upload-manual-flow">
+		<http:listener config-ref="Clientes_Test_HTTP_Listener_config"
+			path="/internal/salesforce/files/upload"
+			allowedMethods="POST"
+			doc:name="POST enviar PDF para o Salesforce">
+			<http:response statusCode="#[vars.httpStatus default 200]" />
+			<http:error-response statusCode="#[vars.httpStatus default 500]">
+				<http:body>#[payload]</http:body>
+			</http:error-response>
+		</http:listener>
+		<set-variable variableName="fileName"
+			value="#[attributes.queryParams.fileName default '']"
+			doc:name="Ler fileName" />
+		<set-variable variableName="requestedProductCode"
+			value="#[attributes.queryParams.productCode default '']"
+			doc:name="Ler productCode opcional" />
+		<choice doc:name="Validar execução manual">
+			<when expression='#[!(p("salesforce.files.manual.enabled") as Boolean)]'>
+				<raise-error type="SF-FILES:MANUAL_DISABLED"
+					description="O envio manual de ficheiros para o Salesforce está desabilitado." />
+			</when>
+		</choice>
+		<!--
+			Apenas o nome do ficheiro (sem pastas), terminado em .pdf: evita path
+			traversal. Espaços são permitidos (ex.: Teste Mule.pdf); / e \ não.
+		-->
+		<choice doc:name="Validar nome do ficheiro">
+			<when expression="#[!((vars.fileName as String) matches /^[A-Za-z0-9][A-Za-z0-9._ -]{0,100}\.(pdf|PDF)$/)]">
+				<raise-error type="SF-FILES:INVALID_FILE_NAME"
+					description="O parâmetro fileName é obrigatório e deve ser um nome simples terminado em .pdf (ex.: 09.021.pdf ou Teste Mule.pdf)." />
+			</when>
+		</choice>
+		<choice doc:name="Validar productCode">
+			<when expression="#[!isEmpty(vars.requestedProductCode) and !((vars.requestedProductCode as String) matches /^[A-Za-z0-9][A-Za-z0-9._-]{0,50}$/)]">
+				<raise-error type="SF-FILES:INVALID_FILE_NAME"
+					description="O parâmetro productCode, quando informado, deve conter apenas letras, números, ponto, hífen ou sublinhado (ex.: 09.021)." />
+			</when>
+		</choice>
+		<flow-ref name="salesforce-files-upload-process-flow"
+			doc:name="Enviar ficheiro ao Salesforce" />
+
+		<error-handler>
+			<on-error-propagate type="SF-FILES:INVALID_FILE_NAME" logException="false">
+				<set-variable variableName="httpStatus" value="400" />
+				<flow-ref name="salesforce-files-error-response-subflow" />
+			</on-error-propagate>
+			<on-error-propagate type="SF-FILES:MANUAL_DISABLED" logException="false">
+				<set-variable variableName="httpStatus" value="403" />
+				<flow-ref name="salesforce-files-error-response-subflow" />
+			</on-error-propagate>
+			<on-error-propagate type="FILE:FILE_DOESNT_EXIST, SF-FILES:PRODUCT_NOT_FOUND" logException="false">
+				<set-variable variableName="httpStatus" value="404" />
+				<flow-ref name="salesforce-files-error-response-subflow" />
+			</on-error-propagate>
+			<on-error-propagate type="SF-FILES:FILE_TOO_LARGE" logException="false">
+				<set-variable variableName="httpStatus" value="413" />
+				<flow-ref name="salesforce-files-error-response-subflow" />
+			</on-error-propagate>
+			<on-error-propagate type="SF-FILES:EMPTY_FILE" logException="false">
+				<set-variable variableName="httpStatus" value="422" />
+				<flow-ref name="salesforce-files-error-response-subflow" />
+			</on-error-propagate>
+			<on-error-propagate type="SALESFORCE:CONNECTIVITY" logException="false">
+				<set-variable variableName="httpStatus" value="502" />
+				<flow-ref name="salesforce-files-error-response-subflow" />
+			</on-error-propagate>
+			<on-error-propagate type="ANY" logException="false">
+				<set-variable variableName="httpStatus" value="500" />
+				<flow-ref name="salesforce-files-error-response-subflow" />
+			</on-error-propagate>
+		</error-handler>
+	</flow>
+
+	<flow name="salesforce-files-upload-process-flow">
+		<set-variable variableName="documentTitle"
+			value="#[(vars.fileName as String) replace /\.(pdf|PDF)$/ with '']"
+			doc:name="Título (nome sem extensão)" />
+		<!-- ProductCode: o parâmetro productCode; sem ele, o nome do ficheiro sem extensão. -->
+		<set-variable variableName="productCode"
+			value="#[if (isEmpty(vars.requestedProductCode)) vars.documentTitle else vars.requestedProductCode]"
+			doc:name="ProductCode do produto" />
+
+		<logger level="INFO" doc:name="Log início"
+			message='#[write({event: "sf-files-upload-started", fileName: vars.fileName, productCode: vars.productCode, correlationId: correlationId}, "application/json", {indent: false}) as String]' />
+
+		<!-- 1. Ler o PDF da pasta local (streaming; o conteúdo só é carregado no envio). -->
+		<file:read config-ref="Salesforce_Files_Input_File_Config"
+			path="#[vars.fileName]"
+			outputMimeType="application/octet-stream"
+			doc:name="Ler PDF da pasta local" />
+		<set-variable variableName="fileSize"
+			value="#[attributes.size default 0]"
+			doc:name="Guardar tamanho" />
+		<set-variable variableName="fileContent"
+			value="#[payload]"
+			doc:name="Guardar conteúdo do ficheiro" />
+		<choice doc:name="Validar tamanho">
+			<when expression="#[vars.fileSize == 0]">
+				<raise-error type="SF-FILES:EMPTY_FILE"
+					description="O ficheiro está vazio." />
+			</when>
+			<when expression='#[vars.fileSize > (p("salesforce.files.maxSizeBytes") as Number)]'>
+				<raise-error type="SF-FILES:FILE_TOO_LARGE"
+					description="#['O ficheiro tem ' ++ (vars.fileSize as String) ++ ' bytes e excede o limite de ' ++ p('salesforce.files.maxSizeBytes') ++ ' bytes.']" />
+			</when>
+		</choice>
+
+		<!-- 2. Encontrar o Product2 pelo ProductCode. -->
+		<salesforce:query config-ref="Salesforce_Files_Config"
+			doc:name="Buscar Product2 pelo ProductCode">
+			<salesforce:salesforce-query><![CDATA[SELECT Id FROM Product2 WHERE ProductCode = ':productCode' LIMIT 1]]></salesforce:salesforce-query>
+			<salesforce:parameters><![CDATA[#[{productCode: vars.productCode}]]]></salesforce:parameters>
+		</salesforce:query>
+		<set-variable variableName="productId"
+			value="#[(payload as Array)[0].Id default null]"
+			doc:name="Guardar Id do Product2" />
+		<choice doc:name="Produto existe?">
+			<when expression="#[vars.productId == null]">
+				<raise-error type="SF-FILES:PRODUCT_NOT_FOUND"
+					description="#['Não existe Product2 com ProductCode ' ++ vars.productCode ++ ' no Salesforce.']" />
+			</when>
+		</choice>
+
+		<!-- 3. Já existe ficheiro com este título neste produto? Então cria nova versão. -->
+		<salesforce:query config-ref="Salesforce_Files_Config"
+			doc:name="Buscar ficheiro existente no produto">
+			<salesforce:salesforce-query><![CDATA[SELECT ContentDocumentId FROM ContentDocumentLink WHERE LinkedEntityId = ':productId' AND ContentDocument.Title = ':title' LIMIT 1]]></salesforce:salesforce-query>
+			<salesforce:parameters><![CDATA[#[{productId: vars.productId, title: vars.documentTitle}]]]></salesforce:parameters>
+		</salesforce:query>
+		<set-variable variableName="contentDocumentId"
+			value="#[(payload as Array)[0].ContentDocumentId default null]"
+			doc:name="Guardar ContentDocumentId existente" />
+
+		<!--
+			4. Montar o ContentVersion. VersionData vai como binário: o conector
+			Salesforce (SOAP) faz a codificação base64 sozinho. NÃO usar toBase64()
+			aqui, senão o ficheiro é codificado duas vezes e fica corrompido.
+			Nova versão: ContentDocumentId (o link com o produto já existe e mantém
+			a visibilidade). Ficheiro novo: FirstPublishLocationId liga ao produto.
+			SharingPrivacy não é enviado (ver comportamento acima).
+		-->
+		<ee:transform doc:name="Montar ContentVersion">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/java
+---
+[{
+	Title: vars.documentTitle,
+	PathOnClient: vars.fileName,
+	VersionData: vars.fileContent as Binary,
+	(ContentDocumentId: vars.contentDocumentId) if vars.contentDocumentId != null,
+	(ReasonForChange: "Atualizado via Mule") if vars.contentDocumentId != null,
+	(FirstPublishLocationId: vars.productId) if vars.contentDocumentId == null,
+	(SharingOption: "A") if vars.contentDocumentId == null
+}]]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+
+		<!-- 5. Enviar ao Salesforce. -->
+		<salesforce:create config-ref="Salesforce_Files_Config"
+			type="ContentVersion"
+			doc:name="Criar ContentVersion">
+			<salesforce:records><![CDATA[#[payload]]]></salesforce:records>
+		</salesforce:create>
+
+		<set-variable variableName="contentVersionId"
+			value='#[payload.items[0].id default ""]'
+			doc:name="Guardar Id do ContentVersion" />
+		<choice doc:name="Criação com sucesso?">
+			<when expression="#[isEmpty(vars.contentVersionId)]">
+				<raise-error type="SF-FILES:CREATE_FAILED"
+					description="#['O Salesforce não criou o ContentVersion: ' ++ write(payload.items[0].errors default payload, 'application/json', {indent: false})]" />
+			</when>
+		</choice>
+
+		<logger level="INFO" doc:name="Log conclusão"
+			message='#[write({event: "sf-files-upload-completed", fileName: vars.fileName, productId: vars.productId, contentVersionId: vars.contentVersionId, mode: if (vars.contentDocumentId == null) "NEW_FILE" else "NEW_VERSION", bytes: vars.fileSize, correlationId: correlationId}, "application/json", {indent: false}) as String]' />
+
+		<ee:transform doc:name="Resposta">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	status: "COMPLETED",
+	fileName: vars.fileName,
+	productCode: vars.productCode,
+	productId: vars.productId,
+	contentVersionId: vars.contentVersionId,
+	mode: if (vars.contentDocumentId == null) "NEW_FILE" else "NEW_VERSION",
+	bytes: vars.fileSize,
+	correlationId: correlationId
+}]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+
+		<error-handler>
+			<on-error-propagate type="ANY" logException="false">
+				<logger level="ERROR" doc:name="Log falha"
+					message='#[write({event: "sf-files-upload-failed", fileName: vars.fileName default null, errorType: (error.errorType.namespace default "UNKNOWN") ++ ":" ++ (error.errorType.identifier default "UNKNOWN"), description: error.description default null, correlationId: correlationId}, "application/json", {indent: false}) as String]' />
+			</on-error-propagate>
+		</error-handler>
+	</flow>
+
+	<sub-flow name="salesforce-files-error-response-subflow">
+		<ee:transform doc:name="Resposta de erro">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	status: "FAILED",
+	fileName: vars.fileName default null,
+	errorType: (error.errorType.namespace default "UNKNOWN") ++ ":" ++ (error.errorType.identifier default "UNKNOWN"),
+	message: error.description default null,
+	correlationId: correlationId
+}]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+	</sub-flow>
+</mule>

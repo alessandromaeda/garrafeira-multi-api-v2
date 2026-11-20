@@ -1,0 +1,14 @@
+# Salesforce (CRM) - envio de ficheiros (ContentVersion).
+# Os valores CHANGE_ME NÃO devem ser commitados com segredos reais:
+# informe-os em runtime (-Dsalesforce.crm.clientSecret=... ou Runtime Manager).
+salesforce:
+  crm:
+    clientId: "CHANGE_ME"
+    clientSecret: "CHANGE_ME"
+    # Sandbox: https://<dominio>--gasodev.sandbox.my.salesforce.com/services/oauth2/token
+    tokenUrl: "https://innovation-flow-32042--gasodev.sandbox.my.salesforce.com/services/oauth2/token"
+  files:
+    manual:
+      enabled: "true"
+    # Limite do ficheiro original. A API do SF aceita até 50 MB já em base64 (+37%).
+    maxSizeBytes: "26214400"
